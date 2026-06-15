@@ -28,6 +28,8 @@ def bot_api(method, params=None):
 
 
 def format_price(price):
+    if price is None:
+        return "n/a"
     if price >= 100:
         return f"{price:.2f}"
     if price >= 1:
@@ -42,7 +44,7 @@ def format_pct(value):
     return f"{sign}{value:.2f}%"
 
 
-def get_current_price(pair):
+def get_current_price_value(pair):
     symbol = f"{pair}USDT"
 
     try:
@@ -51,12 +53,16 @@ def get_current_price(pair):
         data = r.json()
 
         if "price" in data:
-            return format_price(float(data["price"]))
+            return float(data["price"])
 
     except Exception as e:
         print(f"Price error for {symbol}: {e}")
 
-    return "n/a"
+    return None
+
+
+def get_current_price(pair):
+    return format_price(get_current_price_value(pair))
 
 
 def get_market_context(pair):
@@ -124,6 +130,46 @@ def build_market_context_text(pair):
 
 📉 From 24H High: {format_pct(ctx["from_high"])}
 📈 From 24H Low : {format_pct(ctx["from_low"])}
+"""
+
+
+def build_watch_level_text(s, current_price):
+    if current_price is None:
+        return "🎯 Watch Level\nn/a"
+
+    move = s["move"]
+
+    if move == 0:
+        return "🎯 Watch Level\nn/a"
+
+    origin = current_price / (1 + move / 100)
+
+    if s["direction"] == "PUMP":
+        impulse_size = current_price - origin
+        retest_low = origin
+        retest_high = origin + impulse_size * 0.35
+
+        return f"""🎯 Watch Level
+Origin: {format_price(origin)}
+Retest zone: {format_price(retest_low)} - {format_price(retest_high)}
+
+Логика:
+Ждать возврат к базе / удержание импульса.
+Не шортить силу без слабости.
+"""
+
+    else:
+        impulse_size = origin - current_price
+        recovery_low = current_price + impulse_size * 0.40
+        recovery_high = current_price + impulse_size * 0.60
+
+        return f"""🎯 Watch Level
+Origin: {format_price(origin)}
+Recovery zone: {format_price(recovery_low)} - {format_price(recovery_high)}
+
+Логика:
+Не ловить нож.
+Ждать выкуп / базу / rejection.
 """
 
 
@@ -233,8 +279,12 @@ def build_alert(s):
     icon = "🟢" if s["direction"] == "PUMP" else "🔴"
     move_icon = "📈" if s["direction"] == "PUMP" else "📉"
     confidence = confidence_score(s, len(history))
-    price = get_current_price(pair)
+
+    current_price = get_current_price_value(pair)
+    price = format_price(current_price)
+
     market_context = build_market_context_text(pair)
+    watch_level = build_watch_level_text(s, current_price)
 
     previous = ""
     if len(history) > 1:
@@ -259,6 +309,8 @@ def build_alert(s):
 
 {market_context}
 
+{watch_level}
+
 🟢 Confidence:
 {confidence}/10{previous}{cascade_text}
 
@@ -278,8 +330,12 @@ def build_alert(s):
 def build_pause_alert(pair, history):
     last = history[-1]
     icon = "🟢" if last["direction"] == "PUMP" else "🔴"
-    price = get_current_price(pair)
+
+    current_price = get_current_price_value(pair)
+    price = format_price(current_price)
+
     market_context = build_market_context_text(pair)
+    watch_level = build_watch_level_text(last, current_price)
 
     moves = "\n".join(
         [f"{x['move']}% / {x['seconds']}s / {x['type']}" for x in history[-5:]]
@@ -296,6 +352,8 @@ def build_pause_alert(pair, history):
 {moves}
 
 {market_context}
+
+{watch_level}
 
 ━━━━━━━━━━━━━━
 
