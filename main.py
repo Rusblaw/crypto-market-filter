@@ -1,20 +1,16 @@
-from telethon.sync import TelegramClient
-from telethon.sessions import StringSession
-import os
+def get_chat_id():
+    updates = bot_api("getUpdates")
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-PHONE = os.getenv("PHONE_NUMBER")
+    for upd in reversed(updates.get("result", [])):
 
-client = TelegramClient(StringSession(), API_ID, API_HASH)
+        # если написали /channel в канале
+        channel_post = upd.get("channel_post", {})
+        if channel_post.get("text") == "/channel":
+            return channel_post["chat"]["id"]
 
-client.start(phone=PHONE)
+        # если написали /start в личку боту
+        msg = upd.get("message", {})
+        if msg.get("text") == "/start":
+            return msg["chat"]["id"]
 
-print("========== DIALOGS ==========")
-
-for dialog in client.iter_dialogs():
-    print(dialog.name)
-    print(dialog.id)
-    print("---------------------")
-
-client.disconnect()
+    return None
