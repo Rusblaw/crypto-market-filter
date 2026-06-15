@@ -27,6 +27,25 @@ def bot_api(method, params=None):
     return requests.post(url, data=params or {}, timeout=20).json()
 
 
+def get_current_price(pair):
+    try:
+        symbol = f"{pair}USDT"
+        url = "https://fapi.binance.com/fapi/v1/ticker/price"
+        r = requests.get(url, params={"symbol": symbol}, timeout=10)
+        data = r.json()
+
+        price = float(data["price"])
+
+        if price >= 100:
+            return f"{price:.2f}"
+        if price >= 1:
+            return f"{price:.4f}"
+        return f"{price:.6f}"
+
+    except Exception:
+        return "n/a"
+
+
 def parse_time_seconds(text):
     m = re.search(r"/\s*(\d+)m([\d.]+)s", text)
     if m:
@@ -133,6 +152,7 @@ def build_alert(s):
     icon = "🟢" if s["direction"] == "PUMP" else "🔴"
     move_icon = "📈" if s["direction"] == "PUMP" else "📉"
     confidence = confidence_score(s, len(history))
+    price = get_current_price(pair)
 
     previous = ""
     if len(history) > 1:
@@ -150,9 +170,10 @@ def build_alert(s):
 {icon} {pair}USDT
 {s['type']} {s['direction']}
 
-{move_icon} Move      {s['move']}%
-⚡ Time       {s['seconds']} sec
-💰 Volume     {format_volume(s['vol_m'])}
+💲 Price      {price}
+{move_icon} Move       {s['move']}%
+⚡ Time        {s['seconds']} sec
+💰 Volume      {format_volume(s['vol_m'])}
 
 🟢 Confidence:
 {confidence}/10{previous}{cascade_text}
@@ -173,6 +194,7 @@ def build_alert(s):
 def build_pause_alert(pair, history):
     last = history[-1]
     icon = "🟢" if last["direction"] == "PUMP" else "🔴"
+    price = get_current_price(pair)
 
     moves = "\n".join(
         [f"{x['move']}% / {x['seconds']}s / {x['type']}" for x in history[-5:]]
@@ -181,6 +203,8 @@ def build_pause_alert(pair, history):
     return f"""🧊 IMPULSE PAUSE
 
 {icon} {pair}USDT
+💲 Price: {price}
+
 После сильного {last['direction']} новых сигналов нет 5 минут.
 
 Последние сигналы:
