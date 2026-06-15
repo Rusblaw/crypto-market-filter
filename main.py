@@ -27,23 +27,50 @@ def bot_api(method, params=None):
     return requests.post(url, data=params or {}, timeout=20).json()
 
 
+def format_price(price):
+    if price >= 100:
+        return f"{price:.2f}"
+    if price >= 1:
+        return f"{price:.4f}"
+    return f"{price:.6f}"
+
+
 def get_current_price(pair):
+    symbol = f"{pair}USDT"
+
+    sources = [
+        ("Binance Futures", "https://fapi.binance.com/fapi/v1/ticker/price", {"symbol": symbol}, "price"),
+        ("Binance Spot", "https://api.binance.com/api/v3/ticker/price", {"symbol": symbol}, "price"),
+    ]
+
+    for name, url, params, price_key in sources:
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            data = r.json()
+
+            if price_key in data:
+                return format_price(float(data[price_key]))
+
+            print(f"{name} no price for {symbol}: {data}")
+
+        except Exception as e:
+            print(f"{name} error for {symbol}: {e}")
+
     try:
-        symbol = f"{pair}USDT"
-        url = "https://fapi.binance.com/fapi/v1/ticker/price"
-        r = requests.get(url, params={"symbol": symbol}, timeout=10)
+        url = "https://api.bybit.com/v5/market/tickers"
+        r = requests.get(url, params={"category": "linear", "symbol": symbol}, timeout=10)
         data = r.json()
+        result = data.get("result", {}).get("list", [])
 
-        price = float(data["price"])
+        if result:
+            return format_price(float(result[0]["lastPrice"]))
 
-        if price >= 100:
-            return f"{price:.2f}"
-        if price >= 1:
-            return f"{price:.4f}"
-        return f"{price:.6f}"
+        print(f"Bybit no price for {symbol}: {data}")
 
-    except Exception:
-        return "n/a"
+    except Exception as e:
+        print(f"Bybit error for {symbol}: {e}")
+
+    return "n/a"
 
 
 def parse_time_seconds(text):
