@@ -7,8 +7,8 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SOURCE_URL = "https://t.me/s/market_shock"
 
-MIN_MOVE = 7.0
-MIN_VOL_M = 50.0
+MIN_MOVE = 6.0
+MIN_VOL_M = 30.0
 MAX_TIME_SEC = 60
 
 sent_ids = set()
