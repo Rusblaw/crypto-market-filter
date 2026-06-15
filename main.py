@@ -35,42 +35,96 @@ def format_price(price):
     return f"{price:.6f}"
 
 
+def format_pct(value):
+    if value is None:
+        return "n/a"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.2f}%"
+
+
 def get_current_price(pair):
     symbol = f"{pair}USDT"
 
-    sources = [
-        ("Binance Futures", "https://fapi.binance.com/fapi/v1/ticker/price", {"symbol": symbol}, "price"),
-        ("Binance Spot", "https://api.binance.com/api/v3/ticker/price", {"symbol": symbol}, "price"),
-    ]
-
-    for name, url, params, price_key in sources:
-        try:
-            r = requests.get(url, params=params, timeout=10)
-            data = r.json()
-
-            if price_key in data:
-                return format_price(float(data[price_key]))
-
-            print(f"{name} no price for {symbol}: {data}")
-
-        except Exception as e:
-            print(f"{name} error for {symbol}: {e}")
-
     try:
-        url = "https://api.bybit.com/v5/market/tickers"
-        r = requests.get(url, params={"category": "linear", "symbol": symbol}, timeout=10)
+        url = "https://fapi.binance.com/fapi/v1/ticker/price"
+        r = requests.get(url, params={"symbol": symbol}, timeout=10)
         data = r.json()
-        result = data.get("result", {}).get("list", [])
 
-        if result:
-            return format_price(float(result[0]["lastPrice"]))
-
-        print(f"Bybit no price for {symbol}: {data}")
+        if "price" in data:
+            return format_price(float(data["price"]))
 
     except Exception as e:
-        print(f"Bybit error for {symbol}: {e}")
+        print(f"Price error for {symbol}: {e}")
 
     return "n/a"
+
+
+def get_market_context(pair):
+    symbol = f"{pair}USDT"
+
+    context = {
+        "change_1h": None,
+        "change_6h": None,
+        "change_24h": None,
+        "from_high": None,
+        "from_low": None,
+    }
+
+    try:
+        ticker_url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+        ticker = requests.get(ticker_url, params={"symbol": symbol}, timeout=10).json()
+
+        current = float(ticker["lastPrice"])
+        high_24h = float(ticker["highPrice"])
+        low_24h = float(ticker["lowPrice"])
+
+        context["change_24h"] = float(ticker["priceChangePercent"])
+
+        if high_24h > 0:
+            context["from_high"] = ((current - high_24h) / high_24h) * 100
+
+        if low_24h > 0:
+            context["from_low"] = ((current - low_24h) / low_24h) * 100
+
+    except Exception as e:
+        print(f"24h context error for {symbol}: {e}")
+
+    try:
+        klines_url = "https://fapi.binance.com/fapi/v1/klines"
+        klines = requests.get(
+            klines_url,
+            params={"symbol": symbol, "interval": "1h", "limit": 7},
+            timeout=10
+        ).json()
+
+        current_price = float(klines[-1][4])
+
+        open_1h = float(klines[-1][1])
+        open_6h = float(klines[-6][1])
+
+        if open_1h > 0:
+            context["change_1h"] = ((current_price - open_1h) / open_1h) * 100
+
+        if open_6h > 0:
+            context["change_6h"] = ((current_price - open_6h) / open_6h) * 100
+
+    except Exception as e:
+        print(f"Klines context error for {symbol}: {e}")
+
+    return context
+
+
+def build_market_context_text(pair):
+    ctx = get_market_context(pair)
+
+    return f"""📊 Market Context
+🕐 1H    {format_pct(ctx["change_1h"])}
+🕕 6H    {format_pct(ctx["change_6h"])}
+🕛 24H   {format_pct(ctx["change_24h"])}
+
+📉 From 24H High: {format_pct(ctx["from_high"])}
+📈 From 24H Low : {format_pct(ctx["from_low"])}
+"""
 
 
 def parse_time_seconds(text):
@@ -180,6 +234,7 @@ def build_alert(s):
     move_icon = "📈" if s["direction"] == "PUMP" else "📉"
     confidence = confidence_score(s, len(history))
     price = get_current_price(pair)
+    market_context = build_market_context_text(pair)
 
     previous = ""
     if len(history) > 1:
@@ -202,6 +257,8 @@ def build_alert(s):
 ⚡ Time        {s['seconds']} sec
 💰 Volume      {format_volume(s['vol_m'])}
 
+{market_context}
+
 🟢 Confidence:
 {confidence}/10{previous}{cascade_text}
 
@@ -222,6 +279,7 @@ def build_pause_alert(pair, history):
     last = history[-1]
     icon = "🟢" if last["direction"] == "PUMP" else "🔴"
     price = get_current_price(pair)
+    market_context = build_market_context_text(pair)
 
     moves = "\n".join(
         [f"{x['move']}% / {x['seconds']}s / {x['type']}" for x in history[-5:]]
@@ -236,6 +294,8 @@ def build_pause_alert(pair, history):
 
 Последние сигналы:
 {moves}
+
+{market_context}
 
 ━━━━━━━━━━━━━━
 
