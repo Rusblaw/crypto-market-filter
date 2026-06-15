@@ -7,9 +7,9 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SOURCE_URL = "https://t.me/s/market_shock"
 
-MIN_MOVE = 6.0
+MIN_MOVE = 5.0
 MIN_VOL_M = 30.0
-MAX_TIME_SEC = 60
+MAX_TIME_SEC = 120
 
 sent_ids = set()
 last_events = {}
@@ -30,22 +30,29 @@ def get_chat_id():
 
 
 def parse_time_seconds(text):
-    m = re.search(r"/\s*([\d.]+)\s*s", text)
-    if m:
-        return float(m.group(1))
-
     m = re.search(r"/\s*(\d+)m([\d.]+)s", text)
     if m:
         return int(m.group(1)) * 60 + float(m.group(2))
+
+    m = re.search(r"/\s*([\d.]+)s", text)
+    if m:
+        return float(m.group(1))
 
     return None
 
 
 def parse_volume_m(text):
-    m = re.search(r"24H Vol:\s*([\d.]+)\s*M", text)
-    if m:
-        return float(m.group(1))
-    return None
+    m = re.search(r"24H Vol:\s*([\d.]+)\s*([MB])", text)
+    if not m:
+        return None
+
+    value = float(m.group(1))
+    unit = m.group(2)
+
+    if unit == "B":
+        return value * 1000
+
+    return value
 
 
 def parse_signal(text):
@@ -118,7 +125,7 @@ Direction: {s['direction']}
 Type: {s['type']}
 Move: {s['move']}%
 Time: {s['seconds']}s
-24H Vol: {s['vol_m']}M
+24H Vol: {s['vol_m']:.1f}M
 
 Recent signals:
 {moves}
@@ -173,6 +180,7 @@ def main():
                     continue
 
                 sent_ids.add(msg_id)
+
                 signal = parse_signal(text)
 
                 if not signal:
