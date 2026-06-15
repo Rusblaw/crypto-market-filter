@@ -11,8 +11,13 @@ MIN_MOVE = 5.0
 MIN_VOL_M = 30.0
 MAX_TIME_SEC = 120
 
+CHECK_PAUSE_SEC = 300      # 5 минут без новых сигналов
+CASCADE_WINDOW_SEC = 300   # 5 минут для каскада
+COOLDOWN_AFTER_CHECK = 1800 # 30 минут не спамить после CHECK
+
 sent_ids = set()
-last_events = {}
+events = {}
+last_check_sent = {}
 
 
 def bot_api(method, params=None):
@@ -55,6 +60,12 @@ def parse_volume_m(text):
     return value
 
 
+def format_volume(vol_m):
+    if vol_m >= 1000:
+        return f"{vol_m / 1000:.2f}B"
+    return f"{vol_m:.1f}M"
+
+
 def parse_signal(text):
     pair_match = re.search(r"USDT-([A-Z0-9]+)", text)
     move_match = re.search(r"USDT-[A-Z0-9]+\s*([+-]\d+(?:\.\d+)?)%", text)
@@ -81,58 +92,118 @@ def parse_signal(text):
         "vol_m": vol_m,
         "type": signal_type,
         "direction": direction,
-        "raw": text,
+        "ts": time.time(),
     }
 
 
 def is_strong_signal(s):
-    if s["type"] not in ["SHOCK", "SLOW"]:
-        return False
-
-    if s["abs_move"] < MIN_MOVE:
-        return False
-
-    if s["vol_m"] < MIN_VOL_M:
-        return False
-
-    if s["seconds"] > MAX_TIME_SEC:
-        return False
-
-    return True
+    return (
+        s["type"] in ["SHOCK", "SLOW"]
+        and s["abs_move"] >= MIN_MOVE
+        and s["vol_m"] >= MIN_VOL_M
+        and s["seconds"] <= MAX_TIME_SEC
+    )
 
 
-def build_message(s):
+def confidence_score(s, history_count):
+    score = 5.5
+
+    if s["type"] == "SHOCK":
+        score += 1.0
+    if s["abs_move"] >= 7:
+        score += 0.8
+    if s["abs_move"] >= 10:
+        score += 0.7
+    if s["seconds"] <= 30:
+        score += 0.7
+    if s["vol_m"] >= 100:
+        score += 0.5
+    if s["vol_m"] >= 1000:
+        score += 0.4
+    if history_count >= 2:
+        score += 0.5
+
+    return min(round(score, 1), 9.5)
+
+
+def build_alert(s):
     pair = s["pair"]
     now = time.time()
 
-    history = last_events.get(pair, [])
-    history = [x for x in history if now - x["ts"] <= 120]
-    history.append({"ts": now, "move": s["move"]})
-    last_events[pair] = history
+    history = events.get(pair, [])
+    history = [x for x in history if now - x["ts"] <= CASCADE_WINDOW_SEC]
+    history.append(s)
+    events[pair] = history
 
-    cascade = len(history) >= 3
+    cascade = len(history) >= 2
+    icon = "🟢" if s["direction"] == "PUMP" else "🔴"
+    move_icon = "📈" if s["direction"] == "PUMP" else "📉"
+    confidence = confidence_score(s, len(history))
 
-    icon = "🚀" if s["direction"] == "PUMP" else "🔻"
-    priority = "🔥 EXTREME EVENT" if cascade else "⚡ STRONG MARKET SHOCK"
+    previous = ""
+    if len(history) > 1:
+        previous_lines = []
+        for i, x in enumerate(history[:-1][-5:], start=1):
+            previous_lines.append(
+                f"{i}) {x['move']}% / {x['seconds']}s / {x['type']}"
+            )
+        previous = "\n\n📌 Previous signals:\n" + "\n".join(previous_lines)
 
-    moves = "\n".join([f"{x['move']}%" for x in history[-5:]])
+    cascade_text = ""
+    if cascade:
+        cascade_text = "\n\n⚠️ Cascade detected\nИмпульс продолжается. Не ловить нож / не шортить силу без подтверждения."
 
-    return f"""
-{priority}
+    return f"""🚨 CRYPTO SCANNER V1
 
 {icon} {pair}USDT
-Direction: {s['direction']}
-Type: {s['type']}
-Move: {s['move']}%
-Time: {s['seconds']}s
-24H Vol: {s['vol_m']:.1f}M
+{s['type']} {s['direction']}
 
-Recent signals:
+{move_icon} Move      {s['move']}%
+⚡ Time       {s['seconds']} sec
+💰 Volume     {format_volume(s['vol_m'])}
+
+🟢 Confidence:
+{confidence}/10{previous}{cascade_text}
+
+━━━━━━━━━━━━━━
+
+✅ Проверить:
+• База
+• Импульс
+• Удержание
+• Ликвидность
+• BTC
+
+📌 Только после подтверждения искать вход.
+"""
+
+
+def build_pause_alert(pair, history):
+    last = history[-1]
+    icon = "🟢" if last["direction"] == "PUMP" else "🔴"
+
+    moves = "\n".join(
+        [f"{x['move']}% / {x['seconds']}s / {x['type']}" for x in history[-5:]]
+    )
+
+    return f"""🧊 IMPULSE PAUSE
+
+{icon} {pair}USDT
+После сильного {last['direction']} новых сигналов нет 5 минут.
+
+Последние сигналы:
 {moves}
 
-Action:
-Не вход сразу. Проверить график:
-Base → Impulse → Retention → Liquidity → Reaction.
+━━━━━━━━━━━━━━
+
+📌 Проверить график:
+• появился ли возврат к базе
+• есть ли удержание импульса
+• есть ли быстрый выкуп / rejection
+• где ближайшая ликвидность
+• что делает BTC
+
+Возможна зона для поиска сетапа.
 """
 
 
@@ -155,6 +226,30 @@ def fetch_messages():
     return messages
 
 
+def check_pauses(chat_id):
+    now = time.time()
+
+    for pair, history in list(events.items()):
+        if not history:
+            continue
+
+        last = history[-1]
+        last_ts = last["ts"]
+
+        if now - last_ts < CHECK_PAUSE_SEC:
+            continue
+
+        if now - last_check_sent.get(pair, 0) < COOLDOWN_AFTER_CHECK:
+            continue
+
+        bot_api("sendMessage", {
+            "chat_id": chat_id,
+            "text": build_pause_alert(pair, history)
+        })
+
+        last_check_sent[pair] = now
+
+
 def main():
     print("Crypto Market Shock Filter started")
 
@@ -175,7 +270,7 @@ def main():
         try:
             messages = fetch_messages()
 
-            for msg_id, text in messages[-20:]:
+            for msg_id, text in messages[-30:]:
                 if msg_id in sent_ids:
                     continue
 
@@ -189,8 +284,10 @@ def main():
                 if is_strong_signal(signal):
                     bot_api("sendMessage", {
                         "chat_id": chat_id,
-                        "text": build_message(signal)
+                        "text": build_alert(signal)
                     })
+
+            check_pauses(chat_id)
 
             time.sleep(25)
 
