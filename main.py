@@ -5,6 +5,8 @@ import requests
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = -1003553154123
+
 SOURCE_URL = "https://t.me/s/market_shock"
 
 MIN_MOVE = 5.0
@@ -23,21 +25,6 @@ last_check_sent = {}
 def bot_api(method, params=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     return requests.post(url, data=params or {}, timeout=20).json()
-
-
-def get_chat_id():
-    updates = bot_api("getUpdates")
-
-    for upd in reversed(updates.get("result", [])):
-        channel_post = upd.get("channel_post", {})
-        if channel_post.get("text") == "/channel":
-            return channel_post["chat"]["id"]
-
-        msg = upd.get("message", {})
-        if msg.get("text") == "/start":
-            return msg["chat"]["id"]
-
-    return None
 
 
 def parse_time_seconds(text):
@@ -231,7 +218,7 @@ def fetch_messages():
     return messages
 
 
-def check_pauses(chat_id):
+def check_pauses():
     now = time.time()
 
     for pair, history in list(events.items()):
@@ -247,7 +234,7 @@ def check_pauses(chat_id):
             continue
 
         bot_api("sendMessage", {
-            "chat_id": chat_id,
+            "chat_id": CHANNEL_ID,
             "text": build_pause_alert(pair, history)
         })
 
@@ -257,16 +244,8 @@ def check_pauses(chat_id):
 def main():
     print("Crypto Market Shock Filter started")
 
-    chat_id = get_chat_id()
-
-    if not chat_id:
-        print("No chat_id found. Send /channel in your channel or /start to the bot.")
-        while not chat_id:
-            time.sleep(10)
-            chat_id = get_chat_id()
-
     bot_api("sendMessage", {
-        "chat_id": chat_id,
+        "chat_id": CHANNEL_ID,
         "text": "✅ Market Shock Filter started"
     })
 
@@ -287,12 +266,11 @@ def main():
 
                 if is_strong_signal(signal):
                     bot_api("sendMessage", {
-                        "chat_id": chat_id,
+                        "chat_id": CHANNEL_ID,
                         "text": build_alert(signal)
                     })
 
-            check_pauses(chat_id)
-
+            check_pauses()
             time.sleep(25)
 
         except Exception as e:
