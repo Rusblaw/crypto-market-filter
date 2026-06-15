@@ -61,7 +61,7 @@ def format_volume(vol_m):
 
 def parse_signal(text):
     pair_match = re.search(r"USDT-([A-Z0-9]+)", text)
-    move_match = re.search(r"USDT-[A-Z0-9]+\s*([+-]\d+(?:\.\d+)?)%", text)
+    move_match = re.search(r"USDT-[A-Z0-9]+\s*([+-]?\d+(?:\.\d+)?)%", text)
 
     if not pair_match or not move_match:
         return None
