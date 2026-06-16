@@ -13,9 +13,9 @@ MIN_MOVE = 5.0
 MIN_VOL_M = 30.0
 MAX_TIME_SEC = 120
 
-CHECK_PAUSE_SEC = 300
+CHECK_PAUSE_SEC = 600
 CASCADE_WINDOW_SEC = 300
-COOLDOWN_AFTER_CHECK = 1800
+COOLDOWN_AFTER_CHECK = 3600
 
 sent_ids = set()
 events = {}
@@ -61,10 +61,6 @@ def get_current_price_value(pair):
     return None
 
 
-def get_current_price(pair):
-    return format_price(get_current_price_value(pair))
-
-
 def get_market_context(pair):
     symbol = f"{pair}USDT"
 
@@ -104,7 +100,6 @@ def get_market_context(pair):
         ).json()
 
         current_price = float(klines[-1][4])
-
         open_1h = float(klines[-1][1])
         open_6h = float(klines[-6][1])
 
@@ -158,12 +153,11 @@ Retest zone: {format_price(retest_low)} - {format_price(retest_high)}
 Не шортить силу без слабости.
 """
 
-    else:
-        impulse_size = origin - current_price
-        recovery_low = current_price + impulse_size * 0.40
-        recovery_high = current_price + impulse_size * 0.60
+    impulse_size = origin - current_price
+    recovery_low = current_price + impulse_size * 0.40
+    recovery_high = current_price + impulse_size * 0.60
 
-        return f"""🎯 Watch Level
+    return f"""🎯 Watch Level
 Origin: {format_price(origin)}
 Recovery zone: {format_price(recovery_low)} - {format_price(recovery_high)}
 
@@ -346,7 +340,7 @@ def build_pause_alert(pair, history):
 {icon} {pair}USDT
 💲 Price: {price}
 
-После сильного {last['direction']} новых сигналов нет 5 минут.
+После сильного {last['direction']} новых сигналов нет 10 минут.
 
 Последние сигналы:
 {moves}
@@ -394,9 +388,17 @@ def check_pauses():
         if not history:
             continue
 
-        last = history[-1]
+        recent_history = [x for x in history if now - x["ts"] <= CASCADE_WINDOW_SEC]
+
+        if not recent_history:
+            continue
+
+        last = recent_history[-1]
 
         if now - last["ts"] < CHECK_PAUSE_SEC:
+            continue
+
+        if len(recent_history) < 2 and abs(last["move"]) < 7:
             continue
 
         if now - last_check_sent.get(pair, 0) < COOLDOWN_AFTER_CHECK:
@@ -404,7 +406,7 @@ def check_pauses():
 
         bot_api("sendMessage", {
             "chat_id": CHANNEL_ID,
-            "text": build_pause_alert(pair, history)
+            "text": build_pause_alert(pair, recent_history)
         })
 
         last_check_sent[pair] = now
