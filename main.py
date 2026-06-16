@@ -1,8 +1,9 @@
 import os
 import time
-import math
 import requests
 from datetime import datetime, timezone
+
+print("BOT FILE STARTED", flush=True)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RAW_CHANNEL_ID = os.getenv("CHANNEL_ID", "1003553154123")
@@ -13,19 +14,18 @@ MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "7.0"))
 
 BINANCE = "https://fapi.binance.com"
 
-
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "XRPUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT",
     "TRXUSDT", "ADAUSDT", "SUIUSDT", "LINKUSDT", "HYPEUSDT", "MNTUSDT",
     "XLMUSDT", "BCHUSDT", "AVAXUSDT", "HBARUSDT", "WIFUSDT", "LTCUSDT",
     "ENAUSDT", "UNIUSDT", "WLFIUSDT", "TAOUSDT", "ETCUSDT", "NEARUSDT",
-    "APTUSDT", "POLUSDT", "DOTUSDT", "CROUSDT", "AAVEUSDT", "CHRUSDT",
-    "XMRUSDT", "ARBUSDT", "ICPUSDT", "KASUSDT", "ALGOUSDT", "VETUSDT",
-    "ATOMUSDT", "WLDUSDT", "SEIUSDT", "FILUSDT", "OPUSDT", "QNTUSDT",
-    "LDOUSDT", "CRVUSDT", "STXUSDT", "FLOWUSDT", "GRTUSDT", "BLURUSDT",
-    "YGGUSDT", "CELOUSDT", "ZILUSDT", "ACHUSDT", "WOOUSDT", "TWTUSDT",
-    "IMXUSDT", "CFXUSDT", "MINAUSDT", "SUSHIUSDT", "ENJUSDT", "1INCHUSDT",
-    "INJUSDT", "SANDUSDT", "EGLDUSDT", "GALAUSDT", "ANKRUSDT", "SKLUSDT",
+    "APTUSDT", "POLUSDT", "DOTUSDT", "AAVEUSDT", "XMRUSDT", "ARBUSDT",
+    "ICPUSDT", "KASUSDT", "ALGOUSDT", "VETUSDT", "ATOMUSDT", "WLDUSDT",
+    "SEIUSDT", "FILUSDT", "OPUSDT", "QNTUSDT", "LDOUSDT", "CRVUSDT",
+    "STXUSDT", "FLOWUSDT", "GRTUSDT", "BLURUSDT", "YGGUSDT", "CELOUSDT",
+    "ZILUSDT", "ACHUSDT", "WOOUSDT", "TWTUSDT", "IMXUSDT", "CFXUSDT",
+    "MINAUSDT", "SUSHIUSDT", "ENJUSDT", "1INCHUSDT", "INJUSDT",
+    "SANDUSDT", "EGLDUSDT", "GALAUSDT", "ANKRUSDT", "SKLUSDT",
     "CVCUSDT", "COREUSDT", "ASTERUSDT", "XPLUSDT", "PUMPFUNUSDT"
 ]
 
@@ -48,14 +48,14 @@ def get_json(path, params=None, timeout=12):
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print("GET error:", path, params, e)
+        print(f"GET error {path} {params}: {e}", flush=True)
         return None
 
 
 def send_telegram(text):
     if not BOT_TOKEN:
-        print("BOT_TOKEN missing")
-        print(text)
+        print("BOT_TOKEN missing", flush=True)
+        print(text, flush=True)
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -67,36 +67,31 @@ def send_telegram(text):
     }
 
     try:
-        r = requests.post(url, json=payload, timeout=12)
-        print("Telegram:", r.status_code, r.text[:200])
+        r = requests.post(url, json=payload, timeout=15)
+        print("Telegram:", r.status_code, r.text[:200], flush=True)
     except Exception as e:
-        print("Telegram error:", e)
+        print("Telegram error:", e, flush=True)
 
 
 def ema(values, period):
     if len(values) < period:
         return values[-1]
-
     k = 2 / (period + 1)
     result = sum(values[:period]) / period
-
     for v in values[period:]:
         result = v * k + result * (1 - k)
-
     return result
 
 
 def get_exchange_symbols():
     data = get_json("/fapi/v1/exchangeInfo")
     valid = set()
-
     try:
         for item in data["symbols"]:
             if item.get("contractType") == "PERPETUAL" and item.get("quoteAsset") == "USDT":
                 valid.add(item["symbol"])
     except Exception:
         pass
-
     return valid
 
 
@@ -118,9 +113,8 @@ def get_candles(symbol, interval, limit=180):
 
     price = closes[-1]
 
-    change_1 = (closes[-1] - opens[-1]) / opens[-1] * 100 if opens[-1] else 0
-    change_5 = (closes[-1] - closes[-6]) / closes[-6] * 100 if closes[-6] else 0
-    change_20 = (closes[-1] - closes[-21]) / closes[-21] * 100 if closes[-21] else 0
+    def pct(a, b):
+        return (a - b) / b * 100 if b else 0.0
 
     tr_list = []
     for i in range(1, len(data)):
@@ -138,38 +132,27 @@ def get_candles(symbol, interval, limit=180):
     recent_vol = sum(volumes_usdt[-5:]) / 5
     vol_ratio = recent_vol / avg_vol if avg_vol else 1
 
-    support_20 = min(lows[-20:])
-    resistance_20 = max(highs[-20:])
-    support_50 = min(lows[-50:])
-    resistance_50 = max(highs[-50:])
-
-    high_20 = max(highs[-20:])
-    low_20 = min(lows[-20:])
-
     return {
         "price": price,
         "open": opens[-1],
         "high": highs[-1],
         "low": lows[-1],
         "close": closes[-1],
-        "change_1": change_1,
-        "change_5": change_5,
-        "change_20": change_20,
+        "change_1": pct(closes[-1], opens[-1]),
+        "change_5": pct(closes[-1], closes[-6]) if len(closes) > 6 else 0,
+        "change_20": pct(closes[-1], closes[-21]) if len(closes) > 21 else 0,
         "atr_pct": atr_pct,
         "vol_ratio": vol_ratio,
         "volume_20": sum(volumes_usdt[-20:]),
         "ema20": ema(closes, 20),
         "ema50": ema(closes, 50),
         "ema100": ema(closes, 100),
-        "support_20": support_20,
-        "resistance_20": resistance_20,
-        "support_50": support_50,
-        "resistance_50": resistance_50,
-        "high_20": high_20,
-        "low_20": low_20,
-        "closes": closes,
-        "highs": highs,
-        "lows": lows,
+        "support_20": min(lows[-20:]),
+        "resistance_20": max(highs[-20:]),
+        "support_50": min(lows[-50:]),
+        "resistance_50": max(highs[-50:]),
+        "high_20": max(highs[-20:]),
+        "low_20": min(lows[-20:]),
     }
 
 
@@ -183,21 +166,15 @@ def get_oi_change(symbol, period="15m"):
     try:
         if not data or len(data) < 2:
             return 0.0
-
         prev = float(data[0]["sumOpenInterestValue"])
         latest = float(data[1]["sumOpenInterestValue"])
-
         return (latest - prev) / prev * 100 if prev else 0.0
     except Exception:
         return 0.0
 
 
 def get_funding(symbol):
-    data = get_json("/fapi/v1/fundingRate", {
-        "symbol": symbol,
-        "limit": 1
-    })
-
+    data = get_json("/fapi/v1/fundingRate", {"symbol": symbol, "limit": 1})
     try:
         return float(data[0]["fundingRate"]) * 100
     except Exception:
@@ -206,7 +183,6 @@ def get_funding(symbol):
 
 def get_ticker_24h(symbol):
     data = get_json("/fapi/v1/ticker/24hr", {"symbol": symbol})
-
     try:
         return {
             "quote_volume": float(data.get("quoteVolume", 0)),
@@ -214,17 +190,11 @@ def get_ticker_24h(symbol):
             "count": int(data.get("count", 0)),
         }
     except Exception:
-        return {
-            "quote_volume": 0,
-            "price_change_pct": 0,
-            "count": 0,
-        }
+        return {"quote_volume": 0, "price_change_pct": 0, "count": 0}
 
 
 def pct_distance(price, level):
-    if price <= 0:
-        return 0.0
-    return (level - price) / price * 100
+    return (level - price) / price * 100 if price else 0.0
 
 
 def abs_pct_distance(price, level):
@@ -237,14 +207,7 @@ def get_btc_context():
     h4 = get_candles("BTCUSDT", "4h")
 
     if not m15 or not h1 or not h4:
-        return {
-            "bias": "NEUTRAL",
-            "mode": "DIRTY",
-            "btc_15m": 0,
-            "btc_1h": 0,
-            "btc_4h": 0,
-            "risk": 0,
-        }
+        return {"mode": "DIRTY", "btc_15m": 0, "btc_1h": 0, "btc_4h": 0, "risk": 0}
 
     btc_15m = m15["change_1"]
     btc_1h = h1["change_1"]
@@ -259,13 +222,6 @@ def get_btc_context():
     else:
         mode = "DIRTY"
 
-    if mode == "BULL":
-        bias = "BULLISH"
-    elif mode == "BEAR":
-        bias = "BEARISH"
-    else:
-        bias = "NEUTRAL"
-
     risk = 0
     if abs(btc_15m) > 0.7:
         risk += 1
@@ -274,51 +230,43 @@ def get_btc_context():
     if abs(btc_4h) > 2.5:
         risk += 1
 
-    return {
-        "bias": bias,
-        "mode": mode,
-        "btc_15m": btc_15m,
-        "btc_1h": btc_1h,
-        "btc_4h": btc_4h,
-        "risk": risk,
-    }
+    return {"mode": mode, "btc_15m": btc_15m, "btc_1h": btc_1h, "btc_4h": btc_4h, "risk": risk}
 
 
 def relative_strength_engine(m15, h1, h4, btc):
     rs15 = m15["change_1"] - btc["btc_15m"]
     rs1h = h1["change_1"] - btc["btc_1h"]
     rs4h = h4["change_1"] - btc["btc_4h"]
-
-    score_long = 0
-    score_short = 0
-    note = ""
-
     weighted = rs15 * 0.25 + rs1h * 0.45 + rs4h * 0.30
 
+    long_score = 0
+    short_score = 0
+    note = ""
+
     if btc["mode"] == "FLAT" and weighted > 0.8:
-        score_long += 1.8
+        long_score += 1.8
         note = "RS strong while BTC flat"
     elif btc["mode"] == "BEAR" and weighted > 0.5:
-        score_long += 2.2
-        note = "holds strong while BTC weak"
+        long_score += 2.2
+        note = "strong while BTC weak"
     elif btc["mode"] == "BULL" and weighted < -0.7:
-        score_short += 1.8
+        short_score += 1.8
         note = "weak while BTC bullish"
     elif weighted > 0.6:
-        score_long += 1.2
+        long_score += 1.2
         note = "strong vs BTC"
     elif weighted < -0.6:
-        score_short += 1.2
+        short_score += 1.2
         note = "weak vs BTC"
 
-    return score_long, score_short, weighted, note
+    return long_score, short_score, weighted, note
 
 
 def oi_smart_engine(h1, oi15, oi1h):
-    score_long = 0
-    score_short = 0
-    warning = ""
+    long_score = 0
+    short_score = 0
     note = ""
+    warning = ""
 
     price_up = h1["change_1"] > 0.15
     price_down = h1["change_1"] < -0.15
@@ -326,267 +274,233 @@ def oi_smart_engine(h1, oi15, oi1h):
     oi_down = oi15 < -0.35 or oi1h < -0.8
 
     if price_up and oi_up:
-        score_long += 1.6
+        long_score += 1.6
         note = "price up + OI up"
     elif price_down and oi_up:
-        score_short += 1.6
+        short_score += 1.6
         note = "price down + OI up"
     elif price_up and oi_down:
-        score_long -= 0.7
+        long_score -= 0.7
         warning = "price up but OI falling"
     elif price_down and oi_down:
-        score_short -= 0.7
+        short_score -= 0.7
         warning = "price down but OI falling"
 
-    return score_long, score_short, note, warning
+    return long_score, short_score, note, warning
 
 
 def funding_engine(funding):
-    score_long = 0
-    score_short = 0
+    long_score = 0
+    short_score = 0
     note = ""
     warning = ""
 
     if funding > 0.05:
-        score_short += 1.4
-        score_long -= 1.1
+        short_score += 1.4
+        long_score -= 1.1
         warning = "funding very hot"
     elif funding > 0.03:
-        score_short += 0.9
-        score_long -= 0.6
+        short_score += 0.9
+        long_score -= 0.6
         warning = "funding hot"
     elif funding < -0.025:
-        score_long += 1.4
-        score_short -= 1.1
+        long_score += 1.4
+        short_score -= 1.1
         note = "funding very negative"
     elif funding < -0.01:
-        score_long += 0.9
-        score_short -= 0.6
+        long_score += 0.9
+        short_score -= 0.6
         note = "funding negative"
     else:
-        score_long += 0.25
-        score_short += 0.25
+        long_score += 0.25
+        short_score += 0.25
         note = "funding neutral"
 
-    return score_long, score_short, note, warning
+    return long_score, short_score, note, warning
 
 
 def atr_filter_engine(h1):
     atr = h1["atr_pct"]
-    score = 0
-    warning = ""
-
     if 0.45 <= atr <= 3.8:
-        score += 0.7
-    elif atr < 0.25:
-        score -= 0.8
-        warning = "ATR too low"
-    elif atr > 6.0:
-        score -= 1.2
-        warning = "ATR too high"
-    elif atr > 4.5:
-        score -= 0.5
-        warning = "ATR elevated"
-
-    return score, warning
+        return 0.7, ""
+    if atr < 0.25:
+        return -0.8, "ATR too low"
+    if atr > 6.0:
+        return -1.2, "ATR too high"
+    if atr > 4.5:
+        return -0.5, "ATR elevated"
+    return 0, ""
 
 
 def distance_filter_engine(price, h4, d1):
-    score_long = 0
-    score_short = 0
+    long_score = 0
+    short_score = 0
     warnings = []
 
     dist_4h_res = pct_distance(price, h4["resistance_50"])
     dist_4h_sup = abs_pct_distance(price, h4["support_50"])
-
     dist_1d_res = pct_distance(price, d1["resistance_50"])
     dist_1d_sup = abs_pct_distance(price, d1["support_50"])
 
     if dist_4h_res < 2.5:
-        score_long -= 1.6
+        long_score -= 1.6
         warnings.append(f"near 4H resistance {dist_4h_res:.2f}%")
-
     if dist_1d_res < 3.5:
-        score_long -= 1.2
+        long_score -= 1.2
         warnings.append(f"near 1D resistance {dist_1d_res:.2f}%")
-
     if dist_4h_sup < 2.5:
-        score_short -= 1.6
+        short_score -= 1.6
         warnings.append(f"near 4H support {dist_4h_sup:.2f}%")
-
     if dist_1d_sup < 3.5:
-        score_short -= 1.2
+        short_score -= 1.2
         warnings.append(f"near 1D support {dist_1d_sup:.2f}%")
 
-    return score_long, score_short, dist_4h_res, dist_4h_sup, dist_1d_res, dist_1d_sup, warnings
+    return long_score, short_score, dist_4h_res, dist_4h_sup, dist_1d_res, dist_1d_sup, warnings
 
 
 def liquidity_rating_engine(ticker):
     volume = ticker["quote_volume"]
     trades = ticker["count"]
 
-    score = 0
-    rating = "LOW"
-
     if volume >= 300_000_000 and trades >= 250_000:
-        score = 1.2
-        rating = "HIGH"
-    elif volume >= 80_000_000 and trades >= 80_000:
-        score = 0.8
-        rating = "GOOD"
-    elif volume >= 20_000_000 and trades >= 25_000:
-        score = 0.4
-        rating = "OK"
-    else:
-        score = -1.0
-        rating = "LOW"
-
-    return score, rating
+        return 1.2, "HIGH"
+    if volume >= 80_000_000 and trades >= 80_000:
+        return 0.8, "GOOD"
+    if volume >= 20_000_000 and trades >= 25_000:
+        return 0.4, "OK"
+    return -1.0, "LOW"
 
 
 def smart_pullback_engine(h1, h4):
-    score_long = 0
-    score_short = 0
-    warning = ""
+    long_score = 0
+    short_score = 0
     note = ""
+    warning = ""
 
-    # Защита от покупки после вертикального пампа
     if h1["change_5"] > 6:
-        score_long -= 1.4
-        warning = "after strong pump, wait pullback"
+        long_score -= 1.4
+        warning = "after pump, wait pullback"
     elif h1["change_5"] < -6:
-        score_short -= 1.4
-        warning = "after strong dump, wait pullback"
+        short_score -= 1.4
+        warning = "after dump, wait pullback"
 
-    # Хороший лонг после отката в локальном ап-тренде
     if h4["ema20"] > h4["ema50"] and -2.5 <= h1["change_5"] <= -0.3:
-        score_long += 1.0
+        long_score += 1.0
         note = "smart pullback long"
 
-    # Хороший шорт после отскока в локальном даун-тренде
     if h4["ema20"] < h4["ema50"] and 0.3 <= h1["change_5"] <= 2.5:
-        score_short += 1.0
+        short_score += 1.0
         note = "smart pullback short"
 
-    return score_long, score_short, note, warning
+    return long_score, short_score, note, warning
 
 
 def fake_breakout_engine(price, h1):
-    score_long = 0
-    score_short = 0
+    long_score = 0
+    short_score = 0
     warning = ""
 
     prev_high = h1["high_20"]
     prev_low = h1["low_20"]
 
-    # Если цена резко выше диапазона, но свеча закрылась обратно — подозрение на ложный пробой
     if h1["high"] > prev_high * 1.003 and price < prev_high:
-        score_long -= 1.0
-        score_short += 0.6
+        long_score -= 1.0
+        short_score += 0.6
         warning = "possible fake breakout high"
 
     if h1["low"] < prev_low * 0.997 and price > prev_low:
-        score_short -= 1.0
-        score_long += 0.6
+        short_score -= 1.0
+        long_score += 0.6
         warning = "possible fake breakdown low"
 
-    return score_long, score_short, warning
+    return long_score, short_score, warning
 
 
 def momentum_score_engine(m15, h1, h4):
-    score_long = 0
-    score_short = 0
-    momentum = 0
-
-    momentum = (
-        m15["change_1"] * 0.25 +
-        h1["change_1"] * 0.45 +
-        h4["change_1"] * 0.30
-    )
+    momentum = m15["change_1"] * 0.25 + h1["change_1"] * 0.45 + h4["change_1"] * 0.30
+    long_score = 0
+    short_score = 0
 
     if 0.3 <= momentum <= 4.5:
-        score_long += min(1.4, momentum / 2.5)
+        long_score += min(1.4, momentum / 2.5)
     elif momentum > 6:
-        score_long -= 0.8
+        long_score -= 0.8
 
     if -4.5 <= momentum <= -0.3:
-        score_short += min(1.4, abs(momentum) / 2.5)
+        short_score += min(1.4, abs(momentum) / 2.5)
     elif momentum < -6:
-        score_short -= 0.8
+        short_score -= 0.8
 
-    return score_long, score_short, momentum
+    return long_score, short_score, momentum
 
 
 def structure_engine(h1, h4, d1):
-    score_long = 0
-    score_short = 0
+    long_score = 0
+    short_score = 0
     reasons_long = []
     reasons_short = []
 
     if h4["ema20"] > h4["ema50"]:
-        score_long += 1.1
+        long_score += 1.1
         reasons_long.append("4H trend up")
     else:
-        score_short += 1.1
+        short_score += 1.1
         reasons_short.append("4H trend down")
 
     if d1["ema20"] > d1["ema50"]:
-        score_long += 1.2
+        long_score += 1.2
         reasons_long.append("Daily trend up")
     else:
-        score_short += 1.2
+        short_score += 1.2
         reasons_short.append("Daily trend down")
-        score_long -= 0.4
+        long_score -= 0.4
 
     if h1["ema20"] > h1["ema50"]:
-        score_long += 0.7
+        long_score += 0.7
         reasons_long.append("1H trend up")
     else:
-        score_short += 0.7
+        short_score += 0.7
         reasons_short.append("1H trend down")
 
-    return score_long, score_short, reasons_long, reasons_short
+    return long_score, short_score, reasons_long, reasons_short
 
 
 def btc_filter_engine(btc):
-    score_long = 0
-    score_short = 0
+    long_score = 0
+    short_score = 0
     warning = ""
 
     if btc["mode"] == "BULL":
-        score_long += 0.8
-        score_short -= 0.3
+        long_score += 0.8
+        short_score -= 0.3
     elif btc["mode"] == "BEAR":
-        score_short += 0.8
-        score_long -= 0.3
+        short_score += 0.8
+        long_score -= 0.3
     elif btc["mode"] == "FLAT":
-        score_long += 0.2
-        score_short += 0.2
+        long_score += 0.2
+        short_score += 0.2
     else:
-        score_long -= 0.3
-        score_short -= 0.3
+        long_score -= 0.3
+        short_score -= 0.3
         warning = "BTC dirty"
 
     if btc["risk"] >= 2:
-        score_long -= 0.5
-        score_short -= 0.5
+        long_score -= 0.5
+        short_score -= 0.5
         warning = "BTC volatile"
 
-    return score_long, score_short, warning
+    return long_score, short_score, warning
 
 
-def create_watch_level(direction, price, h1, h4):
+def create_watch_level(direction, price, h1):
     if direction == "LONG":
-        base = max(h1["support_20"], price * 0.97)
-        watch = max(base, price * 0.985)
+        watch = max(h1["support_20"], price * 0.985)
         return watch, "WATCH LONG"
-    else:
-        base = min(h1["resistance_20"], price * 1.03)
-        watch = min(base, price * 1.015)
-        return watch, "WATCH SHORT"
+    watch = min(h1["resistance_20"], price * 1.015)
+    return watch, "WATCH SHORT"
 
 
-def risk_reward_filter(direction, price, entry1, invalidation, tp1, tp2):
+def risk_reward_filter(direction, entry1, invalidation, tp1):
     if direction == "LONG":
         risk = abs(entry1 - invalidation)
         reward = abs(tp1 - entry1)
@@ -596,17 +510,11 @@ def risk_reward_filter(direction, price, entry1, invalidation, tp1, tp2):
 
     rr = reward / risk if risk > 0 else 0
 
-    penalty = 0
-    warning = ""
-
     if rr < 0.55:
-        penalty = -1.2
-        warning = f"poor RR {rr:.2f}"
-    elif rr < 0.75:
-        penalty = -0.6
-        warning = f"weak RR {rr:.2f}"
-
-    return rr, penalty, warning
+        return rr, -1.2, f"poor RR {rr:.2f}"
+    if rr < 0.75:
+        return rr, -0.6, f"weak RR {rr:.2f}"
+    return rr, 0, ""
 
 
 def score_symbol(symbol, btc):
@@ -630,101 +538,78 @@ def score_symbol(symbol, btc):
     reasons_short = []
     warnings = []
 
-    # 1. Structure
     s_long, s_short, r_long, r_short = structure_engine(h1, h4, d1)
     long_score += s_long
     short_score += s_short
     reasons_long += r_long
     reasons_short += r_short
 
-    # 2. Relative Strength Engine
     rs_long, rs_short, rs_value, rs_note = relative_strength_engine(m15, h1, h4, btc)
     long_score += rs_long
     short_score += rs_short
     if rs_note:
-        if rs_long >= rs_short:
-            reasons_long.append(rs_note)
-        else:
-            reasons_short.append(rs_note)
+        (reasons_long if rs_long >= rs_short else reasons_short).append(rs_note)
 
-    # 3. Open Interest Smart
     oi_long, oi_short, oi_note, oi_warning = oi_smart_engine(h1, oi15, oi1h)
     long_score += oi_long
     short_score += oi_short
     if oi_note:
-        if oi_long >= oi_short:
-            reasons_long.append(oi_note)
-        else:
-            reasons_short.append(oi_note)
+        (reasons_long if oi_long >= oi_short else reasons_short).append(oi_note)
     if oi_warning:
         warnings.append(oi_warning)
 
-    # 4. Funding Engine
     f_long, f_short, f_note, f_warning = funding_engine(funding)
     long_score += f_long
     short_score += f_short
     if f_note:
-        if f_long >= f_short:
-            reasons_long.append(f_note)
-        else:
-            reasons_short.append(f_note)
+        (reasons_long if f_long >= f_short else reasons_short).append(f_note)
     if f_warning:
         warnings.append(f_warning)
 
-    # 5. ATR Filter
     atr_score, atr_warning = atr_filter_engine(h1)
     long_score += atr_score
     short_score += atr_score
     if atr_warning:
         warnings.append(atr_warning)
 
-    # 6. Distance Filter
     d_long, d_short, dist_4h_res, dist_4h_sup, dist_1d_res, dist_1d_sup, d_warnings = distance_filter_engine(price, h4, d1)
     long_score += d_long
     short_score += d_short
     warnings += d_warnings
 
-    # 7. BTC Context
     b_long, b_short, btc_warning = btc_filter_engine(btc)
     long_score += b_long
     short_score += b_short
     if btc_warning:
         warnings.append(btc_warning)
 
-    # 8. Liquidity Rating
     liq_score, liquidity_rating = liquidity_rating_engine(ticker)
     long_score += liq_score
     short_score += liq_score
     if liquidity_rating == "LOW":
         warnings.append("low liquidity")
 
-    # Extra 1. Smart Pullback
     p_long, p_short, p_note, p_warning = smart_pullback_engine(h1, h4)
     long_score += p_long
     short_score += p_short
     if p_note:
-        if p_long >= p_short:
-            reasons_long.append(p_note)
-        else:
-            reasons_short.append(p_note)
+        (reasons_long if p_long >= p_short else reasons_short).append(p_note)
     if p_warning:
         warnings.append(p_warning)
 
-    # Extra 2. Fake Breakout Detector
     fb_long, fb_short, fb_warning = fake_breakout_engine(price, h1)
     long_score += fb_long
     short_score += fb_short
     if fb_warning:
         warnings.append(fb_warning)
 
-    # Extra 3. Momentum Score
     mom_long, mom_short, momentum = momentum_score_engine(m15, h1, h4)
     long_score += mom_long
     short_score += mom_short
     if mom_long > mom_short:
-        reasons_long.append("momentum score positive")
+        reasons_long.append("momentum positive")
     elif mom_short > mom_long:
-        reasons_short.append("momentum score negative")
+        reasons_short.append("momentum negative")
 
     direction = "LONG" if long_score >= short_score else "SHORT"
     raw_score = max(long_score, short_score)
@@ -746,5 +631,152 @@ def score_symbol(symbol, btc):
         invalidation = price * (1 + atr_pct * 1.9)
         reasons = reasons_short[:6]
 
-    # Watch Level
-    watch_level, watc
+    watch_level, watch_type = create_watch_level(direction, price, h1)
+
+    rr, rr_penalty, rr_warning = risk_reward_filter(direction, entry1, invalidation, tp1)
+    raw_score += rr_penalty
+    if rr_warning:
+        warnings.append(rr_warning)
+
+    confidence = max(4.0, min(9.6, raw_score + 2.2))
+
+    if direction == "LONG" and d1["ema20"] < d1["ema50"]:
+        confidence -= 0.5
+        warnings.append("long vs Daily trend")
+
+    if direction == "SHORT" and d1["ema20"] > d1["ema50"]:
+        confidence -= 0.5
+        warnings.append("short vs Daily trend")
+
+    if liquidity_rating == "LOW":
+        confidence -= 0.7
+
+    confidence = max(4.0, min(9.6, confidence))
+
+    return {
+        "symbol": symbol,
+        "direction": direction,
+        "confidence": confidence,
+        "price": price,
+        "ch15": m15["change_1"],
+        "ch1": h1["change_1"],
+        "ch4": h4["change_1"],
+        "oi15": oi15,
+        "oi1h": oi1h,
+        "funding": funding,
+        "rs": rs_value,
+        "momentum": momentum,
+        "atr": h1["atr_pct"],
+        "volume24": ticker["quote_volume"],
+        "liquidity": liquidity_rating,
+        "dist_4h_res": dist_4h_res,
+        "dist_4h_sup": dist_4h_sup,
+        "dist_1d_res": dist_1d_res,
+        "dist_1d_sup": dist_1d_sup,
+        "entry1": entry1,
+        "entry2": entry2,
+        "tp1": tp1,
+        "tp2": tp2,
+        "invalidation": invalidation,
+        "watch_level": watch_level,
+        "watch_type": watch_type,
+        "rr": rr,
+        "reasons": reasons,
+        "warnings": warnings[:5],
+    }
+
+
+def fmt(x):
+    if x >= 100:
+        return f"{x:.2f}"
+    if x >= 1:
+        return f"{x:.4f}"
+    return f"{x:.6f}"
+
+
+def fmt_volume(x):
+    if x >= 1_000_000_000:
+        return f"{x / 1_000_000_000:.2f}B"
+    if x >= 1_000_000:
+        return f"{x / 1_000_000:.1f}M"
+    if x >= 1_000:
+        return f"{x / 1_000:.1f}K"
+    return f"{x:.0f}"
+
+
+def stars(confidence):
+    full = int(round(confidence))
+    full = max(1, min(10, full))
+    return "⭐" * full
+
+
+def build_message(rows, btc):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    msg = "🔥 <b>DAILY COIN SCANNER V4 ELITE</b>\n"
+    msg += f"⏰ {now}\n"
+    msg += "Источник: Binance Futures\n"
+    msg += f"BTC: <b>{btc['mode']}</b> | 15m {btc['btc_15m']:.2f}% | 1H {btc['btc_1h']:.2f}% | 4H {btc['btc_4h']:.2f}%\n\n"
+
+    if not rows:
+        msg += f"❌ Нет монет выше confidence {MIN_CONFIDENCE}.\n"
+        msg += "Лучше подождать, рынок без чистого edge."
+        return msg
+
+    best = rows[0]
+    msg += f"🏆 <b>BEST COIN:</b> {best['symbol']} — {best['direction']} {best['confidence']:.1f}/10\n\n"
+
+    for i, r in enumerate(rows, 1):
+        icon = "🟢" if r["direction"] == "LONG" else "🔴"
+        msg += f"{i}) {icon} <b>{r['symbol']} — {r['direction']}</b>\n"
+        msg += f"{stars(r['confidence'])} <b>{r['confidence']:.1f}/10</b>\n"
+        msg += f"Price: {fmt(r['price'])}\n"
+        msg += f"Entry: <b>{fmt(r['entry1'])}</b> / <b>{fmt(r['entry2'])}</b>\n"
+        msg += f"TP: {fmt(r['tp1'])} / {fmt(r['tp2'])}\n"
+        msg += f"👀 {r['watch_type']}: <b>{fmt(r['watch_level'])}</b>\n\n"
+
+    msg += "⚠️ Это сканер. Перед лимитками проверяй график/стакан/BTC."
+    return msg
+
+
+def scan_once():
+    print("SCAN STARTED", flush=True)
+    valid_symbols = get_exchange_symbols()
+    btc = get_btc_context()
+    results = []
+
+    for symbol in SYMBOLS:
+        if valid_symbols and symbol not in valid_symbols:
+            print("Skip invalid:", symbol, flush=True)
+            continue
+
+        print("Scanning", symbol, flush=True)
+        row = score_symbol(symbol, btc)
+
+        if row and row["confidence"] >= MIN_CONFIDENCE:
+            results.append(row)
+
+        time.sleep(0.18)
+
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    send_telegram(build_message(results[:TOP_N], btc))
+    print("SCAN FINISHED", flush=True)
+
+
+def main():
+    print("MAIN STARTED", flush=True)
+    send_telegram("✅ Daily Coin Scanner V4 ELITE started")
+
+    while True:
+        try:
+            scan_once()
+        except Exception as e:
+
+            print("Main error:", e, flush=True)
+            send_telegram(f"⚠️ Scanner error: {e}")
+
+        time.sleep(SCAN_INTERVAL_MINUTES * 60)
+
+
+if __name__ == "__main__":
+    main()
