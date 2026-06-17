@@ -711,7 +711,53 @@ def stars(confidence):
     full = max(1, min(10, full))
     return "⭐" * full
 
+def now_ms():
+    return int(time.time() * 1000)
 
+
+def load_state():
+    try:
+        with open(SIGNALS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {
+            "signals": [],
+            "stats": {
+                "total": 0,
+                "wins": 0,
+                "losses": 0,
+                "expired": 0
+            }
+        }
+
+
+def save_state(state):
+    try:
+        with open(SIGNALS_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        print("Save state error:", e, flush=True)
+
+
+def age_text(created_at_ms):
+    minutes = int((now_ms() - created_at_ms) / 60000)
+    h = minutes // 60
+    m = minutes % 60
+    if h > 0:
+        return f"{h}h {m}m"
+    return f"{m}m"
+
+
+def active_signals():
+    state = load_state()
+    return [
+        s for s in state["signals"]
+        if s.get("status") in ["WAITING", "ACTIVE"]
+    ]
+
+
+def active_symbols_set():
+    return set(s["symbol"] for s in active_signals())
 def probability(confidence):
     return int(min(92, max(55, confidence * 10)))
 
