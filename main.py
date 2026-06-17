@@ -794,7 +794,64 @@ def signal_type(r):
         return "💪 RS LEADER"
 
     return "📊 SETUP"
+def current_price(symbol):
+    c = get_candles(symbol, "15m", 100)
+    if not c:
+        return None
+    return c["price"]
 
+
+def check_active_signals():
+    state = load_state()
+    events = []
+
+    for s in state["signals"]:
+        if s.get("status") not in ["WAITING", "ACTIVE"]:
+            continue
+
+        symbol = s["symbol"]
+        direction = s["direction"]
+        entry = float(s["entry1"])
+        tp1 = float(s["tp1"])
+        invalidation = float(s["invalidation"])
+        created = int(s["created"])
+
+        price = current_price(symbol)
+        if price is None:
+            continue
+
+        age_hours = (now_ms() - created) / 1000 / 60 / 60
+
+        if s["status"] == "WAITING":
+            if age_hours >= SIGNAL_EXPIRY_HOURS:
+                s["status"] = "EXPIRED"
+                events.append(f"⏰ EXPIRED\n{symbol} {direction}\nEntry not touched in {SIGNAL_EXPIRY_HOURS}h")
+                continue
+
+            if direction == "LONG" and price <= entry:
+                s["status"] = "ACTIVE"
+                events.append(f"🟢 ENTRY TRIGGERED\n{symbol} LONG\nEntry: {fmt(entry)}\nCurrent: {fmt(price)}")
+
+            if direction == "SHORT" and price >= entry:
+                s["status"] = "ACTIVE"
+                events.append(f"🔴 ENTRY TRIGGERED\n{symbol} SHORT\nEntry: {fmt(entry)}\nCurrent: {fmt(price)}")
+
+        if s["status"] == "ACTIVE":
+            if direction == "LONG":
+                if price >= tp1:
+                    s["status"] = "WIN"
+                    events.append(f"✅ TP1 HIT\n{symbol} LONG WIN\nTP1: {fmt(tp1)}\nCurrent: {fmt(price)}")
+
+                elif price <= invalidation:
+                    s["status"] = "LOSS"
+                    events.append(f"❌ INVALIDATED\n{symbol} LONG LOSS\nInvalidation: {fmt(invalidation)}\nCurrent: {fmt(price)}")
+
+    save_state(state)
+
+    if not events:
+        return ""
+
+    return "📊 <b>SIGNAL STATUS UPDATE</b>\n\n" + "\n\n".join(events[:10]) + "\n\n"
 
 def build_message(rows, btc):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -844,7 +901,8 @@ def build_message(rows, btc):
 
 
 def scan_once():
-    print("SCAN STARTED", flush=True)
+    print("SCAN STARTED", flush=True) 
+    status_msg = check_active_signals()
     active_symbols = active_symbols_set()
     valid_symbols = get_exchange_symbols()
     btc = get_btc_context()
@@ -872,7 +930,7 @@ def scan_once():
 
     register_new_signals(top)
 
-    send_telegram(build_message(top, btc))
+    send_telegram(status_msg + build_message(top, btc))
     print("SCAN FINISHED", flush=True)
 
 
