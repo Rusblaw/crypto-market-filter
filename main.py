@@ -757,7 +757,24 @@ def active_signals():
 
 
 def active_symbols_set():
-    return set(s["symbol"] for s in active_signals())
+    return set(s["symbol"] for s in active_signals()) 
+    def register_new_signals(rows):
+    state = load_state()
+
+    for r in rows:
+        state["signals"].append({
+            "symbol": r["symbol"],
+            "direction": r["direction"],
+            "entry1": r["entry1"],
+            "entry2": r["entry2"],
+            "tp1": r["tp1"],
+            "tp2": r["tp2"],
+            "invalidation": r["invalidation"],
+            "created": now_ms(),
+            "status": "WAITING"
+        })
+
+    save_state(state)
 def probability(confidence):
     return int(min(92, max(55, confidence * 10)))
 
@@ -849,8 +866,12 @@ def scan_once():
         time.sleep(0.18)
 
     results.sort(key=lambda x: x["confidence"], reverse=True)
-    send_telegram(build_message(results[:TOP_N], btc))
-    print("SCAN FINISHED", flush=True)
+top = results[:TOP_N]
+
+register_new_signals(top)
+
+send_telegram(build_message(top, btc))
+print("SCAN FINISHED", flush=True)
 
 
 def main():
