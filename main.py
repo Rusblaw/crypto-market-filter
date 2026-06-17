@@ -758,7 +758,7 @@ def active_signals():
 
 def active_symbols_set():
     return set(s["symbol"] for s in active_signals()) 
-    def register_new_signals(rows):
+def register_new_signals(rows):
     state = load_state()
 
     for r in rows:
