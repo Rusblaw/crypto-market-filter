@@ -12,7 +12,8 @@ RAW_CHANNEL_ID = os.getenv("CHANNEL_ID", "1003553154123")
 SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "30"))
 TOP_N = int(os.getenv("TOP_N", "5"))
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "7.0"))
-
+SIGNALS_FILE = "signals.json"
+SIGNAL_EXPIRY_HOURS = 24
 BINANCE = "https://fapi.binance.com"
 
 SYMBOLS = [
