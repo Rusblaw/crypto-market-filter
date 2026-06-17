@@ -845,7 +845,10 @@ def check_active_signals():
                 elif price <= invalidation:
                     s["status"] = "LOSS"
                     events.append(f"❌ INVALIDATED\n{symbol} LONG LOSS\nInvalidation: {fmt(invalidation)}\nCurrent: {fmt(price)}")
-
+        state["signals"] = [
+        s for s in state["signals"]
+        if s.get("status") in ["WAITING", "ACTIVE"]
+]
     save_state(state)
 
     if not events:
