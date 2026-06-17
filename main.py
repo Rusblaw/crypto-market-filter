@@ -854,7 +854,8 @@ def scan_once():
         if valid_symbols and symbol not in valid_symbols:
             print("Skip invalid:", symbol, flush=True)
             continue
-            if symbol in active_symbols:
+
+        if symbol in active_symbols:
             print("Skip active:", symbol, flush=True)
             continue
 
