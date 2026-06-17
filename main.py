@@ -906,7 +906,6 @@ def build_message(rows, btc):
 
 def scan_once():
     print("SCAN STARTED", flush=True) 
-    status_msg = check_active_signals()
     active_symbols = active_symbols_set()
     valid_symbols = get_exchange_symbols()
     btc = get_btc_context()
@@ -934,7 +933,7 @@ def scan_once():
 
     register_new_signals(top)
 
-    send_telegram(status_msg + build_message(top, btc))
+    send_telegram(build_message(top, btc))
     print("SCAN FINISHED", flush=True)
 
 
@@ -942,15 +941,24 @@ def main():
     print("MAIN STARTED", flush=True)
     send_telegram("✅ Daily Coin Scanner V4 ELITE started")
 
+    last_scan = 0
+
     while True:
         try:
-            scan_once()
-        except Exception as e:
+            status_msg = check_active_signals()
+            if status_msg:
+                send_telegram(status_msg)
 
+            now = time.time()
+            if now - last_scan >= SCAN_INTERVAL_MINUTES * 60:
+                scan_once()
+                last_scan = now
+
+        except Exception as e:
             print("Main error:", e, flush=True)
             send_telegram(f"⚠️ Scanner error: {e}")
 
-        time.sleep(SCAN_INTERVAL_MINUTES * 60)
+        time.sleep(ACTIVE_CHECK_MINUTES * 60)
 
 
 if __name__ == "__main__":
