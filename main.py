@@ -710,10 +710,30 @@ def stars(confidence):
     return "⭐" * full
 
 
+watchdef probability(confidence):
+    return int(min(92, max(55, confidence * 10)))
+
+
+def signal_type(r):
+    reasons = " ".join(r.get("reasons", [])).lower()
+    warnings = " ".join(r.get("warnings", [])).lower()
+
+    if "pullback" in reasons:
+        return "🔄 PULLBACK"
+    if "fake" in warnings:
+        return "⚠️ REVERSAL"
+    if "momentum" in reasons or r.get("momentum", 0) > 1.2:
+        return "🔥 MOMENTUM"
+    if r.get("rs", 0) > 1.0:
+        return "💪 RS LEADER"
+
+    return "📊 SETUP"
+
+
 def build_message(rows, btc):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    msg = "🔥 <b>DAILY COIN SCANNER V4 ELITE</b>\n"
+    msg = "🔥 <b>DAILY COIN SCANNER V4.1 ELITE</b>\n"
     msg += f"⏰ {now}\n"
     msg += "Источник: Binance Futures\n"
     msg += f"BTC: <b>{btc['mode']}</b> | 15m {btc['btc_15m']:.2f}% | 1H {btc['btc_1h']:.2f}% | 4H {btc['btc_4h']:.2f}%\n\n"
@@ -728,12 +748,30 @@ def build_message(rows, btc):
 
     for i, r in enumerate(rows, 1):
         icon = "🟢" if r["direction"] == "LONG" else "🔴"
+
         msg += f"{i}) {icon} <b>{r['symbol']} — {r['direction']}</b>\n"
         msg += f"{stars(r['confidence'])} <b>{r['confidence']:.1f}/10</b>\n"
+        msg += f"{signal_type(r)} | Probability: <b>{probability(r['confidence'])}%</b>\n\n"
+
         msg += f"Price: {fmt(r['price'])}\n"
         msg += f"Entry: <b>{fmt(r['entry1'])}</b> / <b>{fmt(r['entry2'])}</b>\n"
         msg += f"TP: {fmt(r['tp1'])} / {fmt(r['tp2'])}\n"
+        msg += f"Invalidation: {fmt(r['invalidation'])}\n"
         msg += f"👀 {r['watch_type']}: <b>{fmt(r['watch_level'])}</b>\n\n"
+
+        msg += f"RR: <b>{r['rr']:.2f}</b>\n"
+        msg += f"ATR1H: {r['atr']:.2f}%\n"
+        msg += f"Funding: {r['funding']:.4f}%\n"
+        msg += f"OI15: {r['oi15']:.2f}% | OI1H: {r['oi1h']:.2f}%\n"
+        msg += f"RS vs BTC: {r['rs']:.2f}%\n"
+        msg += f"Liquidity: {r['liquidity']} | Vol24: {fmt_volume(r['volume24'])}\n"
+
+        msg += "Why: " + (", ".join(r["reasons"]) if r["reasons"] else "mixed signal") + "\n"
+
+        if r["warnings"]:
+            msg += "⚠️ " + ", ".join(r["warnings"]) + "\n"
+
+        msg += "\n"
 
     msg += "⚠️ Это сканер. Перед лимитками проверяй график/стакан/BTC."
     return msg
