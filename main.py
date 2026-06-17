@@ -710,7 +710,7 @@ def stars(confidence):
     return "⭐" * full
 
 
-watchdef probability(confidence):
+def probability(confidence):
     return int(min(92, max(55, confidence * 10)))
 
 
