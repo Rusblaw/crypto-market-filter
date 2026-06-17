@@ -868,12 +868,12 @@ def scan_once():
         time.sleep(0.18)
 
     results.sort(key=lambda x: x["confidence"], reverse=True)
-top = results[:TOP_N]
+    top = results[:TOP_N]
 
-register_new_signals(top)
+    register_new_signals(top)
 
-send_telegram(build_message(top, btc))
-print("SCAN FINISHED", flush=True)
+    send_telegram(build_message(top, btc))
+    print("SCAN FINISHED", flush=True)
 
 
 def main():
