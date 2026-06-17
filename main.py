@@ -699,7 +699,7 @@ def fmt(x):
 
 
 def fmt_volume(x):
-        if x >= 1_000_000_000:
+    if x >= 1_000_000_000:
         return f"{x / 1_000_000_000:.2f}B"
     if x >= 1_000_000:
         return f"{x / 1_000_000:.1f}M"
