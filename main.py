@@ -827,6 +827,7 @@ def build_message(rows, btc):
 
 def scan_once():
     print("SCAN STARTED", flush=True)
+    active_symbols = active_symbols_set()
     valid_symbols = get_exchange_symbols()
     btc = get_btc_context()
     results = []
