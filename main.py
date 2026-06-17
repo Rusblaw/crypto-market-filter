@@ -9,12 +9,13 @@ print("BOT FILE STARTED", flush=True)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RAW_CHANNEL_ID = os.getenv("CHANNEL_ID", "1003553154123")
 
-SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "30"))
+SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "240"))
 TOP_N = int(os.getenv("TOP_N", "5"))
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "7.0"))
 SIGNALS_FILE = "signals.json"
 SIGNAL_EXPIRY_HOURS = 12
-ACTIVE_CHECK_MINUTES = 5
+ACTIVE_CHECK_MINUTES = int(os.getenv("ACTIVE_CHECK_MINUTES", "5"))
+STATUS_REPORT_INTERVAL_MINUTES = int(os.getenv("STATUS_REPORT_INTERVAL_MINUTES", "240"))
 BINANCE = "https://fapi.binance.com"
 
 SYMBOLS = [
@@ -698,7 +699,7 @@ def fmt(x):
 
 
 def fmt_volume(x):
-    if x >= 1_000_000_000:
+        if x >= 1_000_000_000:
         return f"{x / 1_000_000_000:.2f}B"
     if x >= 1_000_000:
         return f"{x / 1_000_000:.1f}M"
@@ -719,17 +720,25 @@ def now_ms():
 def load_state():
     try:
         with open(SIGNALS_FILE, "r") as f:
-            return json.load(f)
+            state = json.load(f)
     except Exception:
-        return {
-            "signals": [],
-            "stats": {
-                "total": 0,
-                "wins": 0,
-                "losses": 0,
-                "expired": 0
-            }
+        state = {}
+
+    if "signals" not in state:
+        state["signals"] = []
+
+    if "closed_signals" not in state:
+        state["closed_signals"] = []
+
+    if "stats" not in state:
+        state["stats"] = {
+            "total": 0,
+            "wins": 0,
+            "losses": 0,
+            "expired": 0
         }
+
+    return state
 
 
 def save_state(state):
@@ -740,13 +749,17 @@ def save_state(state):
         print("Save state error:", e, flush=True)
 
 
-def age_text(created_at_ms):
-    minutes = int((now_ms() - created_at_ms) / 60000)
+def format_duration(ms):
+    minutes = max(0, int(ms / 60000))
     h = minutes // 60
     m = minutes % 60
     if h > 0:
         return f"{h}h {m}m"
     return f"{m}m"
+
+
+def age_text(created_at_ms):
+    return format_duration(now_ms() - int(created_at_ms))
 
 
 def active_signals():
@@ -758,24 +771,39 @@ def active_signals():
 
 
 def active_symbols_set():
-    return set(s["symbol"] for s in active_signals()) 
+    return set(s["symbol"] for s in active_signals())
+
+
 def register_new_signals(rows):
     state = load_state()
+    existing = set(
+        s["symbol"] for s in state["signals"]
+        if s.get("status") in ["WAITING", "ACTIVE"]
+    )
 
     for r in rows:
+        if r["symbol"] in existing:
+            continue
+
         state["signals"].append({
             "symbol": r["symbol"],
             "direction": r["direction"],
+            "confidence": r.get("confidence", 0),
+            "signal_type": signal_type(r),
             "entry1": r["entry1"],
             "entry2": r["entry2"],
             "tp1": r["tp1"],
             "tp2": r["tp2"],
             "invalidation": r["invalidation"],
             "created": now_ms(),
+            "activated": None,
             "status": "WAITING"
         })
+        state["stats"]["total"] = state["stats"].get("total", 0) + 1
+        existing.add(r["symbol"])
 
     save_state(state)
+
 
 def probability(confidence):
     return int(min(92, max(55, confidence * 10)))
@@ -795,11 +823,162 @@ def signal_type(r):
         return "💪 RS LEADER"
 
     return "📊 SETUP"
+
+
 def current_price(symbol):
     c = get_candles(symbol, "15m", 100)
     if not c:
         return None
     return c["price"]
+
+
+def calc_profit_pct(direction, entry, exit_price):
+    if entry <= 0:
+        return 0.0
+    if direction == "LONG":
+        return (exit_price - entry) / entry * 100
+    return (entry - exit_price) / entry * 100
+
+
+def add_closed_signal(state, signal, result, exit_price, profit_pct=None):
+    entry = float(signal["entry1"])
+    created = int(signal["created"])
+    activated = signal.get("activated")
+    closed = now_ms()
+
+    if profit_pct is None:
+        profit_pct = calc_profit_pct(signal["direction"], entry, exit_price)
+
+    time_to_entry_ms = None
+    if activated:
+        time_to_entry_ms = int(activated) - created
+
+    time_in_trade_ms = None
+    if activated:
+        time_in_trade_ms = closed - int(activated)
+
+    state["closed_signals"].append({
+        "symbol": signal["symbol"],
+        "direction": signal["direction"],
+        "result": result,
+        "confidence": signal.get("confidence", 0),
+        "signal_type": signal.get("signal_type", ""),
+        "entry": entry,
+        "exit": exit_price,
+        "profit_pct": profit_pct,
+        "created": created,
+        "activated": activated,
+        "closed": closed,
+        "time_to_entry_ms": time_to_entry_ms,
+        "time_in_trade_ms": time_in_trade_ms
+    })
+
+    if result == "WIN":
+        state["stats"]["wins"] = state["stats"].get("wins", 0) + 1
+    elif result == "LOSS":
+        state["stats"]["losses"] = state["stats"].get("losses", 0) + 1
+    elif result == "EXPIRED":
+        state["stats"]["expired"] = state["stats"].get("expired", 0) + 1
+
+
+def period_label(hours):
+    if hours == 24:
+        return "24h"
+    if hours == 24 * 7:
+        return "7d"
+    if hours == 24 * 30:
+        return "30d"
+    if hours == 24 * 30 * 6:
+        return "6m"
+    if hours == 24 * 365:
+        return "1y"
+    return f"{hours}h"
+
+
+def closed_in_period(state, hours):
+    since = now_ms() - hours * 60 * 60 * 1000
+    return [s for s in state.get("closed_signals", []) if int(s.get("closed", 0)) >= since]
+
+
+def performance_line(closed, label):
+    wins = [s for s in closed if s.get("result") == "WIN"]
+    losses = [s for s in closed if s.get("result") == "LOSS"]
+    expired = [s for s in closed if s.get("result") == "EXPIRED"]
+
+    win_count = len(wins)
+    loss_count = len(losses)
+    expired_count = len(expired)
+    total = win_count + loss_count + expired_count
+    activated = win_count + loss_count
+
+    winrate = (win_count / activated * 100) if activated else 0
+    gross_profit = sum(float(s.get("profit_pct", 0)) for s in wins)
+    gross_loss = sum(float(s.get("profit_pct", 0)) for s in losses)
+    net = gross_profit + gross_loss
+    profit_factor = gross_profit / abs(gross_loss) if gross_loss < 0 else (gross_profit if gross_profit > 0 else 0)
+
+    return (
+        f"{label}: {total} signals | ✅ {win_count} / ❌ {loss_count} / ⌛ {expired_count}\n"
+        f"WR: {winrate:.1f}% | Net: {net:+.2f}% | PF: {profit_factor:.2f}"
+    )
+
+
+def build_performance_report():
+    state = load_state()
+    periods = [24, 24 * 7, 24 * 30, 24 * 30 * 6, 24 * 365]
+    lines = ["📈 <b>SCANNER PERFORMANCE</b>"]
+
+    for hours in periods:
+        closed = closed_in_period(state, hours)
+        lines.append(performance_line(closed, period_label(hours)))
+
+    all_closed = state.get("closed_signals", [])
+    lines.append(performance_line(all_closed, "All time"))
+    return "\n\n".join(lines)
+
+
+def build_status_report():
+    state = load_state()
+
+    waiting = [s for s in state["signals"] if s.get("status") == "WAITING"]
+    active = [s for s in state["signals"] if s.get("status") == "ACTIVE"]
+    closed_24h = closed_in_period(state, 24)
+
+    wins = [s for s in closed_24h if s.get("result") == "WIN"]
+    losses = [s for s in closed_24h if s.get("result") == "LOSS"]
+    expired = [s for s in closed_24h if s.get("result") == "EXPIRED"]
+
+    msg = "📊 <b>SCANNER STATUS</b>\n\n"
+
+    msg += f"⏳ <b>Waiting entry ({len(waiting)})</b>\n"
+    if waiting:
+        for s in waiting[:10]:
+            msg += f"{s['symbol']} {s['direction']} — {age_text(s['created'])}\n"
+    else:
+        msg += "No waiting signals\n"
+
+    msg += f"\n🟢 <b>Active trades ({len(active)})</b>\n"
+    if active:
+        for s in active[:10]:
+            price = current_price(s["symbol"])
+            entry = float(s["entry1"])
+            if price:
+                pnl = calc_profit_pct(s["direction"], entry, price)
+                msg += f"{s['symbol']} {s['direction']} — {pnl:+.2f}% | {age_text(s.get('activated') or s['created'])}\n"
+            else:
+                msg += f"{s['symbol']} {s['direction']} — {age_text(s.get('activated') or s['created'])}\n"
+    else:
+        msg += "No active trades\n"
+
+    msg += "\n✅ <b>Closed 24h</b>\n"
+    msg += f"Wins: {len(wins)} | Losses: {len(losses)} | Expired: {len(expired)}\n"
+
+    if wins:
+        msg += "\nLast wins:\n"
+        for s in wins[-5:]:
+            msg += f"{s['symbol']} {s['direction']} {float(s.get('profit_pct', 0)):+.2f}%\n"
+
+    return msg
 
 
 def check_active_signals():
@@ -826,36 +1005,105 @@ def check_active_signals():
         if s["status"] == "WAITING":
             if age_hours >= SIGNAL_EXPIRY_HOURS:
                 s["status"] = "EXPIRED"
-                events.append(f"⏰ EXPIRED\n{symbol} {direction}\nEntry not touched in {SIGNAL_EXPIRY_HOURS}h")
+                add_closed_signal(state, s, "EXPIRED", price, 0.0)
+                events.append(
+                    f"⏰ EXPIRED\n"
+                    f"{symbol} {direction}\n"
+                    f"Entry not touched in {SIGNAL_EXPIRY_HOURS}h\n"
+                    f"Current: {fmt(price)}"
+                )
                 continue
 
             if direction == "LONG" and price <= entry:
                 s["status"] = "ACTIVE"
-                events.append(f"🟢 ENTRY TRIGGERED\n{symbol} LONG\nEntry: {fmt(entry)}\nCurrent: {fmt(price)}")
+                s["activated"] = now_ms()
+                events.append(
+                    f"🟢 ENTRY TRIGGERED\n"
+                    f"{symbol} LONG\n"
+                    f"Entry: {fmt(entry)}\n"
+                    f"Current: {fmt(price)}"
+                )
 
             if direction == "SHORT" and price >= entry:
                 s["status"] = "ACTIVE"
-                events.append(f"🔴 ENTRY TRIGGERED\n{symbol} SHORT\nEntry: {fmt(entry)}\nCurrent: {fmt(price)}")
+                s["activated"] = now_ms()
+                events.append(
+                    f"🔴 ENTRY TRIGGERED\n"
+                    f"{symbol} SHORT\n"
+                    f"Entry: {fmt(entry)}\n"
+                    f"Current: {fmt(price)}"
+                )
 
         if s["status"] == "ACTIVE":
+            activated = int(s.get("activated") or created)
+            time_text = format_duration(now_ms() - activated)
+
             if direction == "LONG":
                 if price >= tp1:
                     s["status"] = "WIN"
-                    events.append(f"✅ TP1 HIT\n{symbol} LONG WIN\nTP1: {fmt(tp1)}\nCurrent: {fmt(price)}")
+                    profit_pct = calc_profit_pct(direction, entry, tp1)
+                    add_closed_signal(state, s, "WIN", tp1, profit_pct)
+                    events.append(
+                        f"✅ TP1 HIT\n"
+                        f"{symbol} LONG WIN\n"
+                        f"TP1: {fmt(tp1)}\n"
+                        f"Current: {fmt(price)}\n"
+                        f"Profit: +{profit_pct:.2f}%\n"
+                        f"Time in trade: {time_text}"
+                    )
 
                 elif price <= invalidation:
                     s["status"] = "LOSS"
-                    events.append(f"❌ INVALIDATED\n{symbol} LONG LOSS\nInvalidation: {fmt(invalidation)}\nCurrent: {fmt(price)}")
-        state["signals"] = [
+                    profit_pct = calc_profit_pct(direction, entry, invalidation)
+                    add_closed_signal(state, s, "LOSS", invalidation, profit_pct)
+                    events.append(
+                        f"❌ INVALIDATED\n"
+                        f"{symbol} LONG LOSS\n"
+                        f"Invalidation: {fmt(invalidation)}\n"
+                        f"Current: {fmt(price)}\n"
+                        f"Result: {profit_pct:.2f}%\n"
+                        f"Time in trade: {time_text}"
+                    )
+
+            if direction == "SHORT":
+                if price <= tp1:
+                    s["status"] = "WIN"
+                    profit_pct = calc_profit_pct(direction, entry, tp1)
+                    add_closed_signal(state, s, "WIN", tp1, profit_pct)
+                    events.append(
+                        f"✅ TP1 HIT\n"
+                        f"{symbol} SHORT WIN\n"
+                        f"TP1: {fmt(tp1)}\n"
+                        f"Current: {fmt(price)}\n"
+                        f"Profit: +{profit_pct:.2f}%\n"
+                        f"Time in trade: {time_text}"
+                    )
+
+                elif price >= invalidation:
+                    s["status"] = "LOSS"
+                    profit_pct = calc_profit_pct(direction, entry, invalidation)
+                    add_closed_signal(state, s, "LOSS", invalidation, profit_pct)
+                    events.append(
+                        f"❌ INVALIDATED\n"
+                        f"{symbol} SHORT LOSS\n"
+                        f"Invalidation: {fmt(invalidation)}\n"
+                        f"Current: {fmt(price)}\n"
+                        f"Result: {profit_pct:.2f}%\n"
+                        f"Time in trade: {time_text}"
+                    )
+
+    state["signals"] = [
         s for s in state["signals"]
         if s.get("status") in ["WAITING", "ACTIVE"]
-]
+    ]
+
     save_state(state)
 
     if not events:
         return ""
 
     return "📊 <b>SIGNAL STATUS UPDATE</b>\n\n" + "\n\n".join(events[:10]) + "\n\n"
+
 
 def build_message(rows, btc):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -939,9 +1187,10 @@ def scan_once():
 
 def main():
     print("MAIN STARTED", flush=True)
-    send_telegram("✅ Daily Coin Scanner V4 ELITE started")
+    send_telegram("✅ Daily Coin Scanner V4.3 ELITE started")
 
     last_scan = 0
+    last_status_report = 0
 
     while True:
         try:
@@ -950,9 +1199,15 @@ def main():
                 send_telegram(status_msg)
 
             now = time.time()
+
             if now - last_scan >= SCAN_INTERVAL_MINUTES * 60:
                 scan_once()
                 last_scan = now
+
+            if now - last_status_report >= STATUS_REPORT_INTERVAL_MINUTES * 60:
+                send_telegram(build_status_report())
+                send_telegram(build_performance_report())
+                last_status_report = now
 
         except Exception as e:
             print("Main error:", e, flush=True)
@@ -963,3 +1218,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
