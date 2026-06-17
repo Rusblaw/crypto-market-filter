@@ -14,6 +14,7 @@ TOP_N = int(os.getenv("TOP_N", "5"))
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "7.0"))
 SIGNALS_FILE = "signals.json"
 SIGNAL_EXPIRY_HOURS = 12
+ACTIVE_CHECK_MINUTES = 5
 BINANCE = "https://fapi.binance.com"
 
 SYMBOLS = [
