@@ -775,6 +775,7 @@ def active_symbols_set():
         })
 
     save_state(state)
+
 def probability(confidence):
     return int(min(92, max(55, confidence * 10)))
 
