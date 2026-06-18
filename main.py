@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import base64
 import requests
 from datetime import datetime, timezone
 
@@ -12,10 +13,20 @@ RAW_CHANNEL_ID = os.getenv("CHANNEL_ID", "1003553154123")
 SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "240"))
 TOP_N = int(os.getenv("TOP_N", "5"))
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "7.0"))
-SIGNALS_FILE = "signals.json"
-SIGNAL_EXPIRY_HOURS = 12
+SIGNALS_FILE = os.getenv("SIGNALS_FILE", "signals.json")
+SIGNAL_EXPIRY_HOURS = int(os.getenv("SIGNAL_EXPIRY_HOURS", "12"))
 ACTIVE_CHECK_MINUTES = int(os.getenv("ACTIVE_CHECK_MINUTES", "5"))
 STATUS_REPORT_INTERVAL_MINUTES = int(os.getenv("STATUS_REPORT_INTERVAL_MINUTES", "240"))
+
+# GitHub persistence for signals/statistics.
+# Add these Railway Variables when ready:
+# GITHUB_TOKEN, GITHUB_REPO=Rusblaw/crypto-market-filter, GITHUB_STATE_FILE=signals.json
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "Rusblaw/crypto-market-filter")
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
+GITHUB_STATE_FILE = os.getenv("GITHUB_STATE_FILE", SIGNALS_FILE)
+GITHUB_API = "https://api.github.com"
+
 BINANCE = "https://fapi.binance.com"
 
 SYMBOLS = [
@@ -674,7 +685,7 @@ def score_symbol(symbol, btc):
         "volume24": ticker["quote_volume"],
         "liquidity": liquidity_rating,
         "dist_4h_res": dist_4h_res,
-        "dist_4h_sup": dist_4h_sup,
+        "dist_4h_sup": disdist_4h_sup,
         "dist_1d_res": dist_1d_res,
         "dist_1d_sup": dist_1d_sup,
         "entry1": entry1,
@@ -717,37 +728,135 @@ def now_ms():
     return int(time.time() * 1000)
 
 
-def load_state():
-    try:
-        with open(SIGNALS_FILE, "r") as f:
-            state = json.load(f)
-    except Exception:
-        state = {}
 
-    if "signals" not in state:
-        state["signals"] = []
-
-    if "closed_signals" not in state:
-        state["closed_signals"] = []
-
-    if "stats" not in state:
-        state["stats"] = {
+def default_state():
+    return {
+        "signals": [],
+        "closed_signals": [],
+        "stats": {
             "total": 0,
             "wins": 0,
             "losses": 0,
             "expired": 0
         }
+    }
+
+
+def normalize_state(state):
+    if not isinstance(state, dict):
+        state = {}
+
+    base = default_state()
+
+    if not isinstance(state.get("signals"), list):
+        state["signals"] = base["signals"]
+
+    if not isinstance(state.get("closed_signals"), list):
+        state["closed_signals"] = base["closed_signals"]
+
+    if not isinstance(state.get("stats"), dict):
+        state["stats"] = base["stats"]
+
+    for key, value in base["stats"].items():
+        state["stats"].setdefault(key, value)
 
     return state
 
 
+def github_enabled():
+    return bool(GITHUB_TOKEN and GITHUB_REPO and GITHUB_STATE_FILE)
+
+
+def github_headers():
+    return {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def github_get_state_file():
+    if not github_enabled():
+        return None, None
+
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{GITHUB_STATE_FILE}"
+    params = {"ref": GITHUB_BRANCH}
+
+    try:
+        r = requests.get(url, headers=github_headers(), params=params, timeout=15)
+
+        if r.status_code == 404:
+            return default_state(), None
+
+        r.raise_for_status()
+        data = r.json()
+        content = base64.b64decode(data.get("content", "")).decode("utf-8")
+        return normalize_state(json.loads(content)), data.get("sha")
+
+    except Exception as e:
+        print("GitHub load_state error:", e, flush=True)
+        return None, None
+
+
+def github_save_state_file(state):
+    if not github_enabled():
+        return False
+
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{GITHUB_STATE_FILE}"
+
+    # Get current SHA before update. This prevents most redeploy/race problems.
+    _, sha = github_get_state_file()
+
+    payload = {
+        "message": f"Update scanner state {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        "content": base64.b64encode(
+            json.dumps(normalize_state(state), indent=2, ensure_ascii=False).encode("utf-8")
+        ).decode("utf-8"),
+        "branch": GITHUB_BRANCH,
+    }
+
+    if sha:
+        payload["sha"] = sha
+
+    try:
+        r = requests.put(url, headers=github_headers(), json=payload, timeout=20)
+        r.raise_for_status()
+        return True
+
+    except Exception as e:
+        print("GitHub save_state error:", e, flush=True)
+        return False
+
+
+def load_state():
+    if github_enabled():
+        state, _ = github_get_state_file()
+        if state is not None:
+            return normalize_state(state)
+
+    try:
+        with open(SIGNALS_FILE, "r") as f:
+            state = json.load(f)
+    except Exception:
+        state = default_state()
+
+    return normalize_state(state)
+
+
 def save_state(state):
+    state = normalize_state(state)
+
+    saved_to_github = github_save_state_file(state)
+
+    # Always keep a local fallback copy too.
     try:
         with open(SIGNALS_FILE, "w") as f:
-            json.dump(state, f, indent=2)
+            json.dump(state, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        print("Save state error:", e, flush=True)
+        print("Local save_state error:", e, flush=True)
 
+    if github_enabled() and not saved_to_github:
+        print("WARNING: GitHub state save failed, local fallback only", flush=True)
 
 def format_duration(ms):
     minutes = max(0, int(ms / 60000))
@@ -881,6 +990,7 @@ def add_closed_signal(state, signal, result, exit_price, profit_pct=None):
         state["stats"]["expired"] = state["stats"].get("expired", 0) + 1
 
 
+
 def period_label(hours):
     if hours == 24:
         return "24h"
@@ -900,7 +1010,7 @@ def closed_in_period(state, hours):
     return [s for s in state.get("closed_signals", []) if int(s.get("closed", 0)) >= since]
 
 
-def performance_line(closed, label):
+def stats_from_closed(closed):
     wins = [s for s in closed if s.get("result") == "WIN"]
     losses = [s for s in closed if s.get("result") == "LOSS"]
     expired = [s for s in closed if s.get("result") == "EXPIRED"]
@@ -911,30 +1021,108 @@ def performance_line(closed, label):
     total = win_count + loss_count + expired_count
     activated = win_count + loss_count
 
-    winrate = (win_count / activated * 100) if activated else 0
     gross_profit = sum(float(s.get("profit_pct", 0)) for s in wins)
     gross_loss = sum(float(s.get("profit_pct", 0)) for s in losses)
     net = gross_profit + gross_loss
-    profit_factor = gross_profit / abs(gross_loss) if gross_loss < 0 else (gross_profit if gross_profit > 0 else 0)
 
-    return (
-        f"{label}: {total} signals | ✅ {win_count} / ❌ {loss_count} / ⌛ {expired_count}\n"
-        f"WR: {winrate:.1f}% | Net: {net:+.2f}% | PF: {profit_factor:.2f}"
-    )
+    winrate = (win_count / activated * 100) if activated else 0.0
+    avg_win = gross_profit / win_count if win_count else 0.0
+    avg_loss = gross_loss / loss_count if loss_count else 0.0
+    profit_factor = gross_profit / abs(gross_loss) if gross_loss < 0 else (gross_profit if gross_profit > 0 else 0.0)
+    expectancy = net / activated if activated else 0.0
+
+    best_trade = None
+    worst_trade = None
+    activated_trades = wins + losses
+
+    if activated_trades:
+        best_trade = max(activated_trades, key=lambda x: float(x.get("profit_pct", 0)))
+        worst_trade = min(activated_trades, key=lambda x: float(x.get("profit_pct", 0)))
+
+    trade_times = [
+        int(s.get("time_in_trade_ms") or 0)
+        for s in activated_trades
+        if s.get("time_in_trade_ms") is not None
+    ]
+    avg_time_ms = sum(trade_times) / len(trade_times) if trade_times else 0
+
+    return {
+        "wins": win_count,
+        "losses": loss_count,
+        "expired": expired_count,
+        "total": total,
+        "activated": activated,
+        "winrate": winrate,
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
+        "net": net,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "profit_factor": profit_factor,
+        "expectancy": expectancy,
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+        "avg_time_ms": avg_time_ms,
+    }
+
+
+def performance_block(closed, label):
+    st = stats_from_closed(closed)
+
+    lines = [
+        f"<b>{label}</b>",
+        f"Signals: {st['total']}",
+        f"✅ Wins: {st['wins']} | ❌ Losses: {st['losses']} | ⏳ Expired: {st['expired']}",
+        f"🎯 WR: {st['winrate']:.1f}% | 💰 Net: {st['net']:+.2f}%",
+        f"📊 PF: {st['profit_factor']:.2f} | 🧮 Exp: {st['expectancy']:+.2f}%",
+        f"📈 Avg Win: {st['avg_win']:+.2f}% | 📉 Avg Loss: {st['avg_loss']:+.2f}%",
+    ]
+
+    if st["best_trade"]:
+        b = st["best_trade"]
+        lines.append(f"🏆 Best: {b['symbol']} {b['direction']} {float(b.get('profit_pct', 0)):+.2f}%")
+
+    if st["worst_trade"]:
+        w = st["worst_trade"]
+        lines.append(f"💥 Worst: {w['symbol']} {w['direction']} {float(w.get('profit_pct', 0)):+.2f}%")
+
+    if st["avg_time_ms"]:
+        lines.append(f"⏱ Avg time: {format_duration(st['avg_time_ms'])}")
+
+    return "\n".join(lines)
 
 
 def build_performance_report():
     state = load_state()
     periods = [24, 24 * 7, 24 * 30, 24 * 30 * 6, 24 * 365]
-    lines = ["📈 <b>SCANNER PERFORMANCE</b>"]
+    lines = ["📈 <b>SCANNER PERFORMANCE V4.2</b>"]
 
     for hours in periods:
         closed = closed_in_period(state, hours)
-        lines.append(performance_line(closed, period_label(hours)))
+        lines.append(performance_block(closed, period_label(hours)))
 
     all_closed = state.get("closed_signals", [])
-    lines.append(performance_line(all_closed, "All time"))
+    lines.append(performance_block(all_closed, "All time"))
+
     return "\n\n".join(lines)
+
+
+def tp_progress_pct(signal, price):
+    direction = signal["direction"]
+    entry = float(signal["entry1"])
+    tp1 = float(signal["tp1"])
+
+    if direction == "LONG":
+        total = tp1 - entry
+        current = price - entry
+    else:
+        total = entry - tp1
+        current = entry - price
+
+    if total <= 0:
+        return 0.0
+
+    return max(0.0, min(100.0, current / total * 100))
 
 
 def build_status_report():
@@ -943,16 +1131,23 @@ def build_status_report():
     waiting = [s for s in state["signals"] if s.get("status") == "WAITING"]
     active = [s for s in state["signals"] if s.get("status") == "ACTIVE"]
     closed_24h = closed_in_period(state, 24)
+    stats_24h = stats_from_closed(closed_24h)
 
     wins = [s for s in closed_24h if s.get("result") == "WIN"]
     losses = [s for s in closed_24h if s.get("result") == "LOSS"]
     expired = [s for s in closed_24h if s.get("result") == "EXPIRED"]
 
-    msg = "📊 <b>SCANNER STATUS</b>\n\n"
+    msg = "📊 <b>SCANNER STATUS V4.2</b>\n\n"
+    msg += f"⏳ Waiting: <b>{len(waiting)}</b>\n"
+    msg += f"🟢 Active: <b>{len(active)}</b>\n"
+    msg += f"✅ Closed 24h: <b>{len(wins)}</b> W / <b>{len(losses)}</b> L / <b>{len(expired)}</b> Exp\n"
+    msg += f"🎯 WR 24h: <b>{stats_24h['winrate']:.1f}%</b>\n"
+    msg += f"💰 Net 24h: <b>{stats_24h['net']:+.2f}%</b>\n"
+    msg += f"📊 PF 24h: <b>{stats_24h['profit_factor']:.2f}</b>\n\n"
 
     msg += f"⏳ <b>Waiting entry ({len(waiting)})</b>\n"
     if waiting:
-        for s in waiting[:10]:
+        for s in waiting[:8]:
             msg += f"{s['symbol']} {s['direction']} — {age_text(s['created'])}\n"
     else:
         msg += "No waiting signals\n"
@@ -962,24 +1157,32 @@ def build_status_report():
         for s in active[:10]:
             price = current_price(s["symbol"])
             entry = float(s["entry1"])
+            age = age_text(s.get("activated") or s["created"])
+
             if price:
                 pnl = calc_profit_pct(s["direction"], entry, price)
-                msg += f"{s['symbol']} {s['direction']} — {pnl:+.2f}% | {age_text(s.get('activated') or s['created'])}\n"
+                progress = tp_progress_pct(s, price)
+                icon = "🟢" if s["direction"] == "LONG" else "🔴"
+                msg += f"{icon} {s['symbol']} {s['direction']}\n"
+                msg += f"P/L: {pnl:+.2f}% | TP progress: {progress:.0f}% | ⏱ {age}\n"
             else:
-                msg += f"{s['symbol']} {s['direction']} — {age_text(s.get('activated') or s['created'])}\n"
+                msg += f"{s['symbol']} {s['direction']} — {age}\n"
     else:
         msg += "No active trades\n"
 
-    msg += "\n✅ <b>Closed 24h</b>\n"
-    msg += f"Wins: {len(wins)} | Losses: {len(losses)} | Expired: {len(expired)}\n"
-
     if wins:
-        msg += "\nLast wins:\n"
+        msg += "\n🏆 <b>Last wins</b>\n"
         for s in wins[-5:]:
-            msg += f"{s['symbol']} {s['direction']} {float(s.get('profit_pct', 0)):+.2f}%\n"
+            t = format_duration(int(s.get("time_in_trade_ms") or 0)) if s.get("time_in_trade_ms") else "-"
+            msg += f"✅ {s['symbol']} {s['direction']} {float(s.get('profit_pct', 0)):+.2f}% | {t}\n"
+
+    if losses:
+        msg += "\n💥 <b>Last losses</b>\n"
+        for s in losses[-3:]:
+            t = format_duration(int(s.get("time_in_trade_ms") or 0)) if s.get("time_in_trade_ms") else "-"
+            msg += f"❌ {s['symbol']} {s['direction']} {float(s.get('profit_pct', 0)):+.2f}% | {t}\n"
 
     return msg
-
 
 def check_active_signals():
     state = load_state()
@@ -1108,7 +1311,7 @@ def check_active_signals():
 def build_message(rows, btc):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    msg = "🔥 <b>DAILY COIN SCANNER V4.1 ELITE</b>\n"
+    msg = "🔥 <b>DAILY COIN SCANNER V4.2 ELITE</b>\n"
     msg += f"⏰ {now}\n"
     msg += "Источник: Binance Futures\n"
     msg += f"BTC: <b>{btc['mode']}</b> | 15m {btc['btc_15m']:.2f}% | 1H {btc['btc_1h']:.2f}% | 4H {btc['btc_4h']:.2f}%\n\n"
@@ -1187,7 +1390,7 @@ def scan_once():
 
 def main():
     print("MAIN STARTED", flush=True)
-    send_telegram("✅ Daily Coin Scanner V4.3 ELITE started")
+    send_telegram("✅ Daily Coin Scanner V4.2 ELITE started")
 
     last_scan = 0
     last_status_report = 0
@@ -1218,4 +1421,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
