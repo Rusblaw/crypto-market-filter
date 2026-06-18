@@ -685,7 +685,7 @@ def score_symbol(symbol, btc):
         "volume24": ticker["quote_volume"],
         "liquidity": liquidity_rating,
         "dist_4h_res": dist_4h_res,
-        "dist_4h_sup": disdist_4h_sup,
+        "dist_4h_sup": dist_4h_sup,
         "dist_1d_res": dist_1d_res,
         "dist_1d_sup": dist_1d_sup,
         "entry1": entry1,
